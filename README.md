@@ -1,5 +1,4 @@
-# living-proof-protocol
-# XautomateX
+# living-proof-protocol -- XautomateX
 # Del Crawford
 
 **AI Solutions Architect | Blockchain Engineer | Automation Specialist**
