@@ -1,0 +1,1385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Living Proof — Pitch Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Special+Elite&display=swap" rel="stylesheet" />
+<script>
+/* deck-stage web component — inlined to avoid file-serving 401 */
+(() => {
+  const DESIGN_W_DEFAULT = 1920;
+  const DESIGN_H_DEFAULT = 1080;
+  const STORAGE_PREFIX = 'deck-stage:slide:';
+  const OVERLAY_HIDE_MS = 1800;
+  const VALIDATE_ATTR = 'no_overflowing_text,no_overlapping_text,slide_sized_text';
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  const stylesheet = `
+    :host { position: fixed; inset: 0; display: block; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif; overflow: hidden; }
+    .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+    .canvas { position: relative; transform-origin: center center; flex-shrink: 0; background: #fff; will-change: transform; }
+    ::slotted(*) { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; box-sizing: border-box !important; overflow: hidden; opacity: 0; pointer-events: none; visibility: hidden; }
+    ::slotted([data-deck-active]) { opacity: 1; pointer-events: auto; visibility: visible; }
+    .tapzones { position: fixed; inset: 0; display: flex; z-index: 2147482000; pointer-events: none; }
+    .tapzone { flex: 1; pointer-events: auto; -webkit-tap-highlight-color: transparent; }
+    @media (hover: hover) and (pointer: fine) { .tapzones { display: none; } }
+    .overlay { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 6px) scale(0.92); filter: blur(6px); display: flex; align-items: center; gap: 4px; padding: 4px; background: #000; color: #fff; border-radius: 999px; font-size: 12px; letter-spacing: 0.01em; opacity: 0; pointer-events: none; transition: opacity 260ms ease, transform 260ms cubic-bezier(.2,.8,.2,1), filter 260ms ease; transform-origin: center bottom; z-index: 2147483000; user-select: none; }
+    .overlay[data-visible] { opacity: 1; pointer-events: auto; transform: translate(-50%, 0) scale(1); filter: blur(0); }
+    .btn { appearance: none; background: transparent; border: 0; margin: 0; padding: 0; color: rgba(255,255,255,0.72); font: inherit; cursor: default; display: inline-flex; align-items: center; justify-content: center; height: 28px; min-width: 28px; border-radius: 999px; transition: background 140ms ease; }
+    .btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    .btn svg { width: 14px; height: 14px; display: block; }
+    .btn.reset { font-size: 11px; font-weight: 500; padding: 0 10px; gap: 6px; }
+    .btn.reset .kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: rgba(255,255,255,0.88); background: rgba(255,255,255,0.12); border-radius: 4px; }
+    .count { font-variant-numeric: tabular-nums; color: #fff; font-weight: 500; padding: 0 8px; min-width: 42px; text-align: center; font-size: 12px; }
+    .count .sep { color: rgba(255,255,255,0.45); margin: 0 3px; }
+    .count .total { color: rgba(255,255,255,0.55); }
+    .divider { width: 1px; height: 14px; background: rgba(255,255,255,0.18); margin: 0 2px; }
+    @media print {
+      :host { position: static; inset: auto; background: none; overflow: visible; }
+      .stage { position: static; display: block; }
+      .canvas { transform: none !important; width: auto !important; height: auto !important; background: none; }
+      ::slotted(*) { position: relative !important; inset: auto !important; width: var(--deck-design-w) !important; height: var(--deck-design-h) !important; opacity: 1 !important; visibility: visible !important; break-after: page; page-break-after: always; overflow: hidden; }
+      ::slotted(*:last-child) { break-after: auto; page-break-after: auto; }
+      .overlay, .tapzones { display: none !important; }
+    }
+  `;
+
+  class DeckStage extends HTMLElement {
+    static get observedAttributes() { return ['width','height','noscale']; }
+    constructor() {
+      super();
+      this._root = this.attachShadow({ mode:'open' });
+      this._index = 0; this._slides = []; this._notes = []; this._hideTimer = null;
+      this._storageKey = STORAGE_PREFIX + (location.pathname || '/');
+      this._onKey = this._onKey.bind(this); this._onResize = this._onResize.bind(this);
+      this._onSlotChange = this._onSlotChange.bind(this); this._onMouseMove = this._onMouseMove.bind(this);
+      this._onTapBack = this._onTapBack.bind(this); this._onTapForward = this._onTapForward.bind(this);
+    }
+    get designWidth() { return parseInt(this.getAttribute('width'),10) || DESIGN_W_DEFAULT; }
+    get designHeight() { return parseInt(this.getAttribute('height'),10) || DESIGN_H_DEFAULT; }
+    connectedCallback() {
+      this._render(); this._loadNotes(); this._syncPrintPageRule();
+      window.addEventListener('keydown', this._onKey);
+      window.addEventListener('resize', this._onResize);
+      window.addEventListener('mousemove', this._onMouseMove, { passive:true });
+    }
+    disconnectedCallback() {
+      window.removeEventListener('keydown', this._onKey);
+      window.removeEventListener('resize', this._onResize);
+      window.removeEventListener('mousemove', this._onMouseMove);
+      if (this._hideTimer) clearTimeout(this._hideTimer);
+    }
+    attributeChangedCallback() {
+      if (this._canvas) {
+        this._canvas.style.width = this.designWidth+'px';
+        this._canvas.style.height = this.designHeight+'px';
+        this._canvas.style.setProperty('--deck-design-w', this.designWidth+'px');
+        this._canvas.style.setProperty('--deck-design-h', this.designHeight+'px');
+        this._fit(); this._syncPrintPageRule();
+      }
+    }
+    _render() {
+      const style = document.createElement('style'); style.textContent = stylesheet;
+      const stage = document.createElement('div'); stage.className = 'stage';
+      const canvas = document.createElement('div'); canvas.className = 'canvas';
+      canvas.style.width = this.designWidth+'px'; canvas.style.height = this.designHeight+'px';
+      canvas.style.setProperty('--deck-design-w', this.designWidth+'px');
+      canvas.style.setProperty('--deck-design-h', this.designHeight+'px');
+      const slot = document.createElement('slot');
+      slot.addEventListener('slotchange', this._onSlotChange);
+      canvas.appendChild(slot); stage.appendChild(canvas);
+      const tapzones = document.createElement('div'); tapzones.className='tapzones export-hidden';
+      const tzBack = document.createElement('div'); tzBack.className='tapzone';
+      const tzMid  = document.createElement('div'); tzMid.className='tapzone'; tzMid.style.pointerEvents='none';
+      const tzFwd  = document.createElement('div'); tzFwd.className='tapzone';
+      tzBack.addEventListener('click', this._onTapBack);
+      tzFwd.addEventListener('click', this._onTapForward);
+      tapzones.append(tzBack, tzMid, tzFwd);
+      const overlay = document.createElement('div'); overlay.className='overlay export-hidden';
+      overlay.innerHTML = `
+        <button class="btn prev" type="button" title="Previous"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg></button>
+        <span class="count"><span class="current">1</span><span class="sep">/</span><span class="total">1</span></span>
+        <button class="btn next" type="button" title="Next"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg></button>
+        <span class="divider"></span>
+        <button class="btn reset" type="button">Reset<span class="kbd">R</span></button>
+      `;
+      overlay.querySelector('.prev').addEventListener('click', () => this._go(this._index-1,'click'));
+      overlay.querySelector('.next').addEventListener('click', () => this._go(this._index+1,'click'));
+      overlay.querySelector('.reset').addEventListener('click', () => this._go(0,'click'));
+      this._root.append(style, stage, tapzones, overlay);
+      this._canvas = canvas; this._slot = slot; this._overlay = overlay;
+      this._countEl = overlay.querySelector('.current'); this._totalEl = overlay.querySelector('.total');
+    }
+    _syncPrintPageRule() {
+      const id = 'deck-stage-print-page';
+      let tag = document.getElementById(id);
+      if (!tag) { tag = document.createElement('style'); tag.id = id; document.head.appendChild(tag); }
+      tag.textContent = '@page { size: '+this.designWidth+'px '+this.designHeight+'px; margin: 0; } @media print { html, body { margin: 0 !important; padding: 0 !important; background: none !important; overflow: visible !important; } * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }';
+    }
+    _onSlotChange() {
+      this._collectSlides(); this._restoreIndex();
+      this._applyIndex({ showOverlay:false, broadcast:true, reason:'init' });
+      this._fit();
+    }
+    _collectSlides() {
+      const assigned = this._slot.assignedElements({ flatten:true });
+      this._slides = assigned.filter(el => !/^(TEMPLATE|SCRIPT|STYLE)$/.test(el.tagName));
+      this._slides.forEach((slide,i) => {
+        const n = i+1;
+        let label = slide.getAttribute('data-label');
+        if (!label) { const existing = slide.getAttribute('data-screen-label'); if (existing) label = existing.replace(/^\s*\d+\s*/,'').trim() || existing; }
+        if (!label) { const h = slide.querySelector('h1,h2,h3,[data-title]'); if (h) label = (h.textContent||'').trim().slice(0,40); }
+        if (!label) label = 'Slide';
+        slide.setAttribute('data-screen-label', pad2(n)+' '+label);
+        if (!slide.hasAttribute('data-om-validate')) slide.setAttribute('data-om-validate', VALIDATE_ATTR);
+        slide.setAttribute('data-deck-slide', String(i));
+      });
+      if (this._totalEl) this._totalEl.textContent = String(this._slides.length||1);
+      if (this._index >= this._slides.length) this._index = Math.max(0, this._slides.length-1);
+    }
+    _loadNotes() {
+      const tag = document.getElementById('speaker-notes'); if (!tag) return;
+      try { const p = JSON.parse(tag.textContent||'[]'); if (Array.isArray(p)) this._notes = p; } catch(e) {}
+    }
+    _restoreIndex() {
+      try { const raw = localStorage.getItem(this._storageKey); if (raw != null) { const n = parseInt(raw,10); if (Number.isFinite(n) && n>=0 && n<this._slides.length) this._index = n; } } catch(e) {}
+    }
+    _persistIndex() { try { localStorage.setItem(this._storageKey, String(this._index)); } catch(e) {} }
+    _applyIndex({ showOverlay=true, broadcast=true, reason='init' } = {}) {
+      if (!this._slides.length) return;
+      const prev = this._prevIndex == null ? -1 : this._prevIndex;
+      const curr = this._index;
+      this._slides.forEach((s,i) => { if (i===curr) s.setAttribute('data-deck-active',''); else s.removeAttribute('data-deck-active'); });
+      if (this._countEl) this._countEl.textContent = String(curr+1);
+      this._persistIndex();
+      if (broadcast) {
+        try { window.postMessage({ slideIndexChanged: curr }, '*'); } catch(e) {}
+        this.dispatchEvent(new CustomEvent('slidechange', { detail:{ index:curr, previousIndex:prev, total:this._slides.length, slide:this._slides[curr]||null, previousSlide: prev>=0?(this._slides[prev]||null):null, reason }, bubbles:true, composed:true }));
+      }
+      this._prevIndex = curr;
+      if (showOverlay) this._flashOverlay();
+    }
+    _flashOverlay() {
+      if (!this._overlay) return;
+      this._overlay.setAttribute('data-visible','');
+      if (this._hideTimer) clearTimeout(this._hideTimer);
+      this._hideTimer = setTimeout(() => this._overlay.removeAttribute('data-visible'), OVERLAY_HIDE_MS);
+    }
+    _fit() {
+      if (!this._canvas) return;
+      if (this.hasAttribute('noscale')) { this._canvas.style.transform = 'none'; return; }
+      const s = Math.min(window.innerWidth/this.designWidth, window.innerHeight/this.designHeight);
+      this._canvas.style.transform = 'scale('+s+')';
+    }
+    _onResize() { this._fit(); }
+    _onMouseMove() { this._flashOverlay(); }
+    _onTapBack(e) { e.preventDefault(); this._go(this._index-1,'tap'); }
+    _onTapForward(e) { e.preventDefault(); this._go(this._index+1,'tap'); }
+    _onKey(e) {
+      const t = e.target; if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key; let handled = true;
+      if (k==='ArrowRight' || k==='PageDown' || k===' ') this._go(this._index+1,'keyboard');
+      else if (k==='ArrowLeft' || k==='PageUp') this._go(this._index-1,'keyboard');
+      else if (k==='Home') this._go(0,'keyboard');
+      else if (k==='End') this._go(this._slides.length-1,'keyboard');
+      else if (k==='r' || k==='R') this._go(0,'keyboard');
+      else if (/^[0-9]$/.test(k)) { const n = k==='0'?9:parseInt(k,10)-1; if (n<this._slides.length) this._go(n,'keyboard'); }
+      else handled = false;
+      if (handled) { e.preventDefault(); this._flashOverlay(); }
+    }
+    _go(i, reason='api') {
+      if (!this._slides.length) return;
+      const c = Math.max(0, Math.min(this._slides.length-1, i));
+      if (c === this._index) { this._flashOverlay(); return; }
+      this._index = c;
+      this._applyIndex({ showOverlay:true, broadcast:true, reason });
+    }
+    get index() { return this._index; }
+    get length() { return this._slides.length; }
+    goTo(i) { this._go(i,'api'); }
+    next() { this._go(this._index+1,'api'); }
+    prev() { this._go(this._index-1,'api'); }
+    reset() { this._go(0,'api'); }
+  }
+  if (!customElements.get('deck-stage')) customElements.define('deck-stage', DeckStage);
+})();
+</script>
+
+<script>
+  // ──────────────────────────────────────────────────────────────
+  // Tweakable defaults. The host parses this JSON block and
+  // rewrites it on disk when the user changes values in Tweaks.
+  // ──────────────────────────────────────────────────────────────
+  const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+    "tone": "cinematic",
+    "accent": "crimson",
+    "grain": true,
+    "workingTitle": "LIVING PROOF",
+    "author": "Del Crawford"
+  }/*EDITMODE-END*/;
+</script>
+
+<style>
+  :root {
+    /* CINEMATIC (default) */
+    --bg:        #0a0908;
+    --bg-2:      #14110f;
+    --fg:        #f3ece0;
+    --fg-dim:    rgba(243,236,224,0.64);
+    --fg-faint:  rgba(243,236,224,0.28);
+    --rule:      rgba(243,236,224,0.14);
+    --accent:    oklch(0.58 0.17 28);       /* crimson */
+    --accent-2:  oklch(0.72 0.14 70);       /* amber */
+    --card:      rgba(243,236,224,0.04);
+
+    --ff-display: "Instrument Serif", "Times New Roman", serif;
+    --ff-body:    "Geist", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    --ff-mono:    "JetBrains Mono", ui-monospace, Menlo, monospace;
+    --ff-type:    "Special Elite", "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+    --type-display-xl: 280px;
+    --type-display-lg: 180px;
+    --type-display-md: 128px;
+    --type-title:      84px;
+    --type-sub:        44px;
+    --type-body:       30px;
+    --type-small:      24px;
+    --type-eyebrow:    22px;
+
+    --pad-x: 120px;
+    --pad-y: 100px;
+  }
+
+  html[data-tone="documentary"] {
+    --bg: #eeeae0;
+    --bg-2: #e1dcd0;
+    --fg: #1a1815;
+    --fg-dim: rgba(26,24,21,0.62);
+    --fg-faint: rgba(26,24,21,0.28);
+    --rule: rgba(26,24,21,0.16);
+    --accent: oklch(0.45 0.14 28);
+    --card: rgba(26,24,21,0.04);
+    --ff-display: "Special Elite", "JetBrains Mono", monospace;
+    --ff-body: "Geist", -apple-system, sans-serif;
+  }
+  html[data-tone="literary"] {
+    --bg: #f4efe6;
+    --bg-2: #ebe4d6;
+    --fg: #1c1a17;
+    --fg-dim: rgba(28,26,23,0.60);
+    --fg-faint: rgba(28,26,23,0.26);
+    --rule: rgba(28,26,23,0.14);
+    --accent: oklch(0.36 0.09 28);
+    --card: rgba(28,26,23,0.04);
+  }
+
+  html[data-accent="amber"]   { --accent: oklch(0.72 0.14 70); }
+  html[data-accent="bone"]    { --accent: oklch(0.85 0.04 80); }
+  html[data-accent="cobalt"]  { --accent: oklch(0.55 0.14 245); }
+  html[data-accent="crimson"] { --accent: oklch(0.58 0.17 28); }
+
+  html, body { margin: 0; padding: 0; background: #000; }
+  body { font-family: var(--ff-body); color: var(--fg); }
+
+  /* ── Slide chrome ── */
+  deck-stage > section {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--ff-body);
+    font-size: var(--type-body);
+    line-height: 1.45;
+    letter-spacing: -0.005em;
+    padding: var(--pad-y) var(--pad-x);
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+  deck-stage > section.light { background: var(--bg-2); }
+  deck-stage > section.cream {
+    background: #f3ece0;
+    color: #14110f;
+    --fg: #14110f;
+    --fg-dim: rgba(20,17,15,0.60);
+    --fg-faint: rgba(20,17,15,0.26);
+    --rule: rgba(20,17,15,0.15);
+    --card: rgba(20,17,15,0.04);
+  }
+
+  /* Film-grain overlay — toggled via [data-grain] on <html> */
+  html[data-grain="true"] deck-stage > section::after {
+    content: "";
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.95  0 0 0 0 0.95  0 0 0 0.35 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    mix-blend-mode: overlay;
+    opacity: 0.28;
+    z-index: 2;
+  }
+  /* vignette */
+  deck-stage > section::before {
+    content: "";
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: radial-gradient(120% 80% at 50% 50%, transparent 55%, rgba(0,0,0,0.45) 100%);
+    z-index: 1;
+  }
+  html[data-tone="literary"] deck-stage > section::before,
+  html[data-tone="documentary"] deck-stage > section::before {
+    background: radial-gradient(140% 90% at 50% 50%, transparent 60%, rgba(0,0,0,0.10) 100%);
+  }
+  deck-stage > section > * { position: relative; z-index: 3; }
+
+  /* Common atoms */
+  .eyebrow {
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    font-weight: 500;
+  }
+  .eyebrow .accent { color: var(--accent); }
+
+  .title-serif {
+    font-family: var(--ff-display);
+    font-weight: 400;
+    font-size: var(--type-title);
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+  .title-serif em { font-style: italic; color: var(--accent); }
+
+  .rule {
+    height: 1px;
+    background: var(--rule);
+    width: 100%;
+  }
+  .rule-accent { height: 2px; background: var(--accent); width: 88px; }
+
+  .kicker-row {
+    display: flex; align-items: center; gap: 28px;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+  .kicker-row .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+  }
+
+  .mono { font-family: var(--ff-mono); }
+  .type { font-family: var(--ff-type); }
+
+  .slide-number {
+    position: absolute;
+    top: 52px; right: var(--pad-x);
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.2em;
+    color: var(--fg-faint);
+  }
+  .slide-stamp {
+    position: absolute;
+    top: 52px; left: var(--pad-x);
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .footer {
+    position: absolute;
+    bottom: 52px; left: var(--pad-x); right: var(--pad-x);
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.2em;
+    color: var(--fg-faint);
+    text-transform: uppercase;
+  }
+
+  /* ── Slide 1 — Title ── */
+  .s-title { justify-content: center; align-items: center; text-align: center; }
+  .s-title .mark {
+    font-family: var(--ff-display);
+    font-weight: 400;
+    font-style: italic;
+    font-size: 40px;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+    margin-bottom: 56px;
+  }
+  .s-title .bigtitle {
+    font-family: var(--ff-display);
+    font-size: 200px;
+    line-height: 0.9;
+    letter-spacing: -0.04em;
+    margin: 0 0 100px;
+  }
+  .s-title .bigtitle .of { font-style: italic; color: var(--accent); }
+  .s-title .sub {
+    font-family: var(--ff-mono);
+    font-size: 26px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin-top: 32px;
+  }
+  .s-title .author {
+    margin-top: 48px;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--fg);
+  }
+  .s-title .cornerA, .s-title .cornerB, .s-title .cornerC, .s-title .cornerD {
+    position: absolute;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.25em;
+    color: var(--fg-faint);
+    text-transform: uppercase;
+  }
+  .s-title .cornerA { top: 52px; left: var(--pad-x); }
+  .s-title .cornerB { top: 52px; right: var(--pad-x); }
+  .s-title .cornerC { bottom: 52px; left: var(--pad-x); }
+  .s-title .cornerD { bottom: 52px; right: var(--pad-x); }
+
+  /* ── Slide 2 — cold open (transcript) ── */
+  .s-cold { justify-content: flex-end; }
+  .s-cold .dateline {
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.22em;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    margin-bottom: 28px;
+  }
+  .s-cold .transcript {
+    font-family: var(--ff-type);
+    font-size: 64px;
+    line-height: 1.25;
+    color: var(--fg);
+    max-width: 1400px;
+  }
+  .s-cold .transcript .officer { color: var(--fg-dim); display: block; margin-bottom: 14px; font-size: 28px; letter-spacing: 0.18em; text-transform: uppercase; font-family: var(--ff-mono); }
+  .s-cold .sceneNum {
+    position: absolute;
+    top: 140px; left: var(--pad-x);
+    font-family: var(--ff-display);
+    font-size: 340px;
+    line-height: 0.8;
+    color: var(--fg-faint);
+    opacity: 0.25;
+    letter-spacing: -0.05em;
+  }
+  .s-cold .kicker {
+    margin-bottom: 44px;
+  }
+
+  /* ── Slide 3 — pitch ── */
+  .s-pitch { justify-content: center; }
+  .s-pitch .pitchBlock {
+    max-width: 1600px;
+  }
+  .s-pitch .pitch {
+    font-family: var(--ff-display);
+    font-size: 108px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin-top: 32px;
+  }
+  .s-pitch .pitch em { font-style: italic; color: var(--accent); }
+  .s-pitch .byline {
+    margin-top: 60px;
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    gap: 48px;
+    align-items: baseline;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+  .s-pitch .byline strong { color: var(--fg); font-weight: 500; }
+
+  /* ── Slide 4 — who is Del now ── */
+  .s-who { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 80px; }
+  .s-who .left { display: flex; flex-direction: column; justify-content: center; }
+  .s-who .left .who-title {
+    font-family: var(--ff-display);
+    font-size: 152px;
+    line-height: 0.95;
+    letter-spacing: -0.02em;
+  }
+  .s-who .left .who-title em { font-style: italic; color: var(--accent); }
+  .s-who .left .lede {
+    margin-top: 40px;
+    font-size: 32px;
+    line-height: 1.45;
+    color: var(--fg-dim);
+    max-width: 680px;
+  }
+  .s-who .right { display: flex; flex-direction: column; justify-content: center; gap: 24px; padding-left: 40px; border-left: 1px solid var(--rule); }
+  .s-who .right dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 24px 36px; }
+  .s-who .right dt { font-family: var(--ff-mono); font-size: 24px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--fg-dim); align-self: baseline; }
+  .s-who .right dd { margin: 0; font-family: var(--ff-display); font-size: 36px; line-height: 1.2; }
+
+  /* ── Slide 5 — three moments grid ── */
+  .s-three { }
+  .s-three .head { display: flex; flex-direction: column; gap: 24px; margin-bottom: 64px; }
+  .s-three .head h2 {
+    font-family: var(--ff-display);
+    font-size: 120px;
+    margin: 0;
+    line-height: 0.95;
+    letter-spacing: -0.02em;
+  }
+  .s-three .head h2 em { font-style: italic; color: var(--accent); }
+  .s-three .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 40px;
+    flex: 1;
+  }
+  .s-three .card {
+    border: 1px solid var(--rule);
+    padding: 36px 32px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    position: relative;
+  }
+  .s-three .card .idx {
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.3em;
+    color: var(--accent);
+  }
+  .s-three .card h3 {
+    font-family: var(--ff-display);
+    font-size: 52px;
+    line-height: 1.0;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .s-three .card p {
+    margin: 0;
+    font-size: 24px;
+    line-height: 1.5;
+    color: var(--fg-dim);
+  }
+  .s-three .card .tag {
+    margin-top: auto;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+
+  /* ── Moment slides template ── */
+  .moment { }
+  .moment .num {
+    position: absolute;
+    top: 80px; right: 60px;
+    font-family: var(--ff-display);
+    font-size: 260px;
+    line-height: 0.8;
+    color: var(--accent);
+    opacity: 0.07;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .moment .eyerow {
+    display: flex; gap: 28px; align-items: center;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin-bottom: 36px;
+  }
+  .moment .eyerow .dot { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; }
+  .moment h2 {
+    font-family: var(--ff-display);
+    font-size: 132px;
+    line-height: 0.92;
+    letter-spacing: -0.03em;
+    margin: 0 0 36px;
+    max-width: 1500px;
+  }
+  .moment h2 em { font-style: italic; color: var(--accent); }
+  .moment .split { display: grid; grid-template-columns: 1.3fr 1fr; gap: 80px; align-items: flex-start; flex: 1; }
+  .moment .split .excerpt { max-width: 820px; }
+  .moment .split .excerpt p { font-family: var(--ff-display); font-size: 30px; line-height: 1.3; color: var(--fg); margin: 0 0 16px; letter-spacing: -0.005em; }
+  .moment .split .excerpt p:last-child { margin-bottom: 0; }
+  .moment .split .excerpt p.beat { font-family: var(--ff-type); font-size: 26px; color: var(--accent); letter-spacing: 0.04em; }
+  .moment .split .excerpt p.break { font-family: var(--ff-mono); font-size: 24px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--fg-faint); text-align: center; margin: 10px 0; }
+  .moment .split .excerpt .tag { display: block; margin-top: 20px; font-family: var(--ff-mono); font-size: 24px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--fg-dim); font-style: normal; }
+  .moment .split .meta { display: flex; flex-direction: column; gap: 20px; padding: 36px; border: 1px solid var(--rule); background: var(--card); }
+  .moment .split .meta .row { display: flex; justify-content: space-between; gap: 20px; align-items: baseline; padding-bottom: 16px; border-bottom: 1px dashed var(--rule); }
+  .moment .split .meta .row:last-child { border: 0; padding-bottom: 0; }
+  .moment .split .meta .row .k { font-family: var(--ff-mono); font-size: 24px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--fg-dim); }
+  .moment .split .meta .row .v { font-family: var(--ff-display); font-size: 34px; }
+
+  /* ── Slide 9 — quote (mother) ── */
+  .s-turn { justify-content: center; align-items: center; text-align: center; }
+  .s-turn .quote {
+    font-family: var(--ff-display);
+    font-size: 128px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    max-width: 1500px;
+    font-style: italic;
+  }
+  .s-turn .qmark {
+    font-family: var(--ff-display);
+    font-size: 240px;
+    line-height: 0.6;
+    color: var(--accent);
+    opacity: 0.3;
+    margin-bottom: -20px;
+  }
+  .s-turn .attribution {
+    margin-top: 72px;
+    font-family: var(--ff-mono);
+    font-size: 24px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+  }
+  .s-turn .attribution .em { color: var(--accent); }
+
+  /* ── Slide 10 — now (XautomateX) ── */
+  .s-now { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 80px; align-items: flex-start; padding-top: 140px; }
+  .s-now .left { display: flex; flex-direction: column; gap: 36px; }
+  .s-now .left h2 {
+    font-family: var(--ff-display);
+    font-size: 124px;
+    line-height: 0.92;
+    margin: 0;
+    letter-spacing: -0.03em;
+  }
+  .s-now .left h2 em { font-style: italic; color: var(--accent); }
+  .s-now .left p { font-size: 24px; line-height: 1.5; color: var(--fg-dim); max-width: 640px; }
+  .s-now .right { display: flex; flex-direction: column; gap: 16px; padding-top: 40px; }
+  .s-now .stat { display: grid; grid-template-columns: 200px 1fr; gap: 32px; align-items: baseline; padding: 20px 0; border-bottom: 1px solid var(--rule); }
+  .s-now .stat:first-child { border-top: 1px solid var(--rule); }
+  .s-now .stat .n {
+    font-family: var(--ff-display);
+    font-size: 88px;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--accent);
+  }
+  .s-now .stat .l { font-size: 24px; line-height: 1.35; color: var(--fg); }
+  .s-now .stat .l small { display: block; color: var(--fg-dim); font-size: 24px; margin-top: 4px; font-family: var(--ff-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* ── Slide 11 — comps ── */
+  .s-comps .head { margin-bottom: 40px; }
+  .s-comps .head h2 {
+    font-family: var(--ff-display); font-size: 88px; margin: 0;
+    line-height: 0.95; letter-spacing: -0.02em;
+  }
+  .s-comps .head h2 em { font-style: italic; color: var(--accent); }
+  .s-comps .head p { margin: 14px 0 0; font-size: 24px; color: var(--fg-dim); max-width: 1000px; }
+  .s-comps .grid { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr 1fr; gap: 24px; flex: 1; min-height: 0; }
+  .s-comps .book {
+    border: 1px solid var(--rule);
+    padding: 22px 22px;
+    display: grid; grid-template-columns: 120px 1fr; gap: 22px;
+    background: var(--card);
+    min-height: 0;
+    overflow: hidden;
+  }
+  .s-comps .book .cover {
+    aspect-ratio: 2 / 3;
+    background: repeating-linear-gradient(135deg, var(--bg-2) 0 8px, rgba(255,255,255,0.02) 8px 16px);
+    border: 1px solid var(--rule);
+    padding: 10px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    font-family: var(--ff-display);
+    position: relative;
+  }
+  .s-comps .book .cover .tt { font-size: 17px; line-height: 1.0; letter-spacing: -0.01em; }
+  .s-comps .book .cover .au { font-family: var(--ff-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--fg-dim); }
+  .s-comps .book .cover .sales { font-family: var(--ff-mono); font-size: 8px; letter-spacing: 0.18em; color: var(--accent); text-transform: uppercase; }
+  .s-comps .book .txt { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .s-comps .book h4 { margin: 0; font-family: var(--ff-display); font-size: 28px; line-height: 1.05; letter-spacing: -0.01em; }
+  .s-comps .book .au2 { font-family: var(--ff-mono); font-size: 24px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--fg-dim); }
+  .s-comps .book p { margin: 0; font-size: 24px; line-height: 1.35; color: var(--fg-dim); }
+  .s-comps .us {
+    background: var(--accent);
+    color: #1a1815;
+    border-color: var(--accent);
+  }
+  html[data-tone="documentary"] .s-comps .us,
+  html[data-tone="literary"] .s-comps .us { color: #f3ece0; }
+  .s-comps .us .cover { background: rgba(0,0,0,0.12); border-color: rgba(0,0,0,0.2); }
+  .s-comps .us .cover .tt, .s-comps .us .cover .au, .s-comps .us .cover .sales,
+  .s-comps .us h4, .s-comps .us .au2, .s-comps .us p { color: inherit; }
+  .s-comps .us .au2, .s-comps .us p { opacity: 0.82; }
+  .s-comps .us .cover .sales { background: #1a1815; color: var(--accent); padding: 3px 6px; align-self: flex-start; }
+
+  /* ── Slide 12 — market ── */
+  .s-mkt h2 {
+    font-family: var(--ff-display); font-size: 104px; margin: 0 0 18px;
+    line-height: 0.95; letter-spacing: -0.02em;
+  }
+  .s-mkt h2 em { font-style: italic; color: var(--accent); }
+  .s-mkt .sub { font-size: 24px; color: var(--fg-dim); margin-bottom: 32px; max-width: 1100px; }
+  .s-mkt .tbl { display: grid; grid-template-columns: 2fr 1fr 3fr; flex: 1; }
+  .s-mkt .tbl .hd {
+    font-family: var(--ff-mono); font-size: 18px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--fg-dim);
+    padding: 16px 24px 16px 0;
+    border-bottom: 2px solid var(--rule);
+  }
+  .s-mkt .tbl .cell {
+    padding: 18px 24px 18px 0;
+    border-bottom: 1px solid var(--rule);
+    display: flex; align-items: center;
+  }
+  .s-mkt .tbl .cell.market { font-family: var(--ff-display); font-size: 34px; letter-spacing: -0.01em; }
+  .s-mkt .tbl .cell.size { font-family: var(--ff-display); font-size: 48px; color: var(--accent); letter-spacing: -0.02em; }
+  .s-mkt .tbl .cell.angle { font-size: 22px; line-height: 1.4; color: var(--fg); }
+  .s-mkt .total {
+    margin-top: 20px;
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-top: 18px;
+    border-top: 2px solid var(--accent);
+  }
+  .s-mkt .total .lbl { font-family: var(--ff-mono); font-size: 22px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--fg); }
+  .s-mkt .total .big { font-family: var(--ff-display); font-size: 84px; letter-spacing: -0.03em; }
+  .s-mkt .total .big em { font-style: italic; color: var(--accent); }
+
+  /* ── Slide 13 — platform ── */
+  .s-plat h2 {
+    font-family: var(--ff-display); font-size: 124px; margin: 0 0 18px;
+    line-height: 0.95; letter-spacing: -0.02em;
+  }
+  .s-plat h2 em { font-style: italic; color: var(--accent); }
+  .s-plat .sub { font-size: 26px; color: var(--fg-dim); margin-bottom: 64px; max-width: 1100px; }
+  .s-plat .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; flex: 1; }
+  .s-plat .col h3 {
+    font-family: var(--ff-mono); font-size: 20px;
+    letter-spacing: 0.24em; text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 24px; padding-bottom: 16px; border-bottom: 1px solid var(--accent);
+  }
+  .s-plat .col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+  .s-plat .col li {
+    font-family: var(--ff-display);
+    font-size: 28px;
+    line-height: 1.25;
+    padding-left: 24px;
+    position: relative;
+    letter-spacing: -0.005em;
+  }
+  .s-plat .col li::before {
+    content: "";
+    position: absolute; left: 0; top: 16px;
+    width: 10px; height: 1px; background: var(--accent);
+  }
+  .s-plat .col li small {
+    display: block;
+    font-family: var(--ff-mono); font-size: 16px;
+    letter-spacing: 0.14em; color: var(--fg-dim);
+    margin-top: 4px; text-transform: uppercase;
+  }
+
+  /* ── Slide 14 — ask ── */
+  .s-ask { justify-content: center; align-items: center; text-align: center; }
+  .s-ask .spec {
+    font-family: var(--ff-mono); font-size: 22px;
+    letter-spacing: 0.3em; text-transform: uppercase; color: var(--fg-dim);
+    margin-bottom: 56px;
+  }
+  .s-ask h2 {
+    font-family: var(--ff-display);
+    font-size: 240px;
+    line-height: 0.9;
+    margin: 0;
+    letter-spacing: -0.04em;
+    max-width: 1600px;
+  }
+  .s-ask h2 em { font-style: italic; color: var(--accent); }
+  .s-ask .contact {
+    margin-top: 80px;
+    display: flex; gap: 64px; flex-wrap: wrap; justify-content: center;
+    font-family: var(--ff-mono);
+    font-size: 22px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg);
+  }
+  .s-ask .contact span { color: var(--fg-dim); margin-right: 12px; }
+  .s-ask .rule { margin: 60px auto 0; width: 120px; background: var(--accent); height: 2px; }
+
+  /* ── Cover concept label (slide 1 embellishment / alt variant) ── */
+  .concept-tag {
+    position: absolute;
+    font-family: var(--ff-mono);
+    font-size: 14px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(0,0,0,0.65);
+    border: 1px solid var(--accent);
+    padding: 6px 12px;
+  }
+
+  /* ──────────────────────────────────────────────────────────────
+     Tweaks panel
+     ────────────────────────────────────────────────────────────── */
+  #tweaks {
+    position: fixed;
+    bottom: 72px; right: 24px;
+    width: 300px;
+    background: #111;
+    color: #f3ece0;
+    border: 1px solid rgba(243,236,224,0.18);
+    font-family: "Geist", -apple-system, sans-serif;
+    font-size: 13px;
+    padding: 18px 18px 16px;
+    z-index: 2147483600;
+    display: none;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  #tweaks[data-open] { display: block; }
+  #tweaks h4 {
+    margin: 0 0 14px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: rgba(243,236,224,0.6);
+    font-weight: 500;
+  }
+  #tweaks .group { margin-bottom: 14px; }
+  #tweaks .group:last-child { margin-bottom: 0; }
+  #tweaks label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(243,236,224,0.55);
+    margin-bottom: 6px;
+  }
+  #tweaks .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+  #tweaks .chip {
+    appearance: none;
+    background: transparent;
+    color: #f3ece0;
+    border: 1px solid rgba(243,236,224,0.2);
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+  }
+  #tweaks .chip[aria-pressed="true"] {
+    background: #f3ece0; color: #111; border-color: #f3ece0;
+  }
+  #tweaks .swatch { width: 22px; height: 22px; padding: 0; border-radius: 999px; }
+  #tweaks .sw-crimson { background: oklch(0.58 0.17 28); }
+  #tweaks .sw-amber   { background: oklch(0.72 0.14 70); }
+  #tweaks .sw-bone    { background: oklch(0.85 0.04 80); }
+  #tweaks .sw-cobalt  { background: oklch(0.55 0.14 245); }
+  #tweaks .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  #tweaks input[type="text"] {
+    width: 100%;
+    background: #1b1b1b;
+    color: #f3ece0;
+    border: 1px solid rgba(243,236,224,0.2);
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 12px;
+    font-family: "JetBrains Mono", monospace;
+  }
+  #tweaks .switch {
+    display: inline-flex; align-items: center; gap: 8px;
+    cursor: pointer; user-select: none;
+  }
+  #tweaks .switch input { accent-color: #f3ece0; }
+
+</style>
+</head>
+<body>
+
+<deck-stage width="1920" height="1080">
+
+  <!-- 01 · TITLE ───────────────────────────────────────── -->
+  <section class="s-title" data-label="Title">
+    <div class="cornerA">PITCH DECK · LITERARY REPRESENTATION</div>
+    <div class="cornerB">2026</div>
+    <div class="mark">— a memoir —</div>
+    <h1 class="bigtitle" id="bigTitle">LIVING <span class="of">PROOF</span></h1>
+    <div class="sub">A true story · 55,000 words · complete manuscript</div>
+    <div class="author" id="authorLine">by Del Crawford</div>
+    <div class="cornerC">LANSING, MICHIGAN</div>
+    <div class="cornerD">LIVINGPROOFDEV.COM</div>
+  </section>
+
+  <!-- 02 · COLD OPEN ────────────────────────────────────── -->
+  <section class="s-cold" data-label="Cold Open">
+    <div class="sceneNum">01</div>
+    <div class="kicker kicker-row"><span class="dot"></span><span>SCENE ONE · DOG HOUSE PUB · ST. THOMAS, USVI</span><span>JUNE 2022</span></div>
+    <div class="dateline">— Saturday night. Three police officers enter the bar. —</div>
+    <div class="transcript">
+      <span class="officer">Officer, to Del:</span>
+      “Are you Del? Turn around. Put your hands behind your back.”
+    </div>
+    <div class="footer"><span>LIVING PROOF · DEL CRAWFORD</span><span>01 / 14</span></div>
+  </section>
+
+  <!-- 03 · PITCH ────────────────────────────────────────── -->
+  <section class="s-pitch" data-label="One-Sentence Pitch">
+    <div class="pitchBlock">
+      <div class="eyebrow">THE PITCH · ONE SENTENCE</div>
+      <div class="pitch">
+        A man who should be dead four times over becomes a <em>certified AI Solutions Architect</em> — and writes the year the system stole from him.
+      </div>
+      <div class="byline">
+        <div><span>COMPS </span><br/><strong>Writing My Wrongs</strong></div>
+        <div><span>×</span><br/><strong>Can't Hurt Me</strong></div>
+        <div><span>×</span><br/><strong>The Sun Does Shine</strong></div>
+        <div><span>POSITIONING</span><br/><strong>True-crime memoir / recovery / justice reform</strong></div>
+      </div>
+    </div>
+    <div class="footer"><span>LIVING PROOF · DEL CRAWFORD</span><span>03 / 14</span></div>
+  </section>
+
+  <!-- 04 · WHO HE IS NOW ────────────────────────────────── -->
+  <section class="s-who" data-label="Who Del Is Now">
+    <div class="slide-stamp">04 · THE AUTHOR</div>
+    <div class="slide-number">04 / 14</div>
+    <div class="left">
+      <div class="eyebrow" style="margin-bottom:28px;">AT 35, WITHOUT A COLLEGE DEGREE</div>
+      <div class="who-title">Del Crawford,<br/><em>today.</em></div>
+      <div class="lede">A certified AI Solutions Architect, self-taught blockchain developer, and founder of two companies — XautomateX and Living Proof Protocol. Fifteen production-grade systems shipped. Ten years clean.</div>
+    </div>
+    <div class="right">
+      <dl>
+        <dt>Certs</dt>
+        <dd>AI Solutions Architect · Responsible AI Leader · Blockchain Dev</dd>
+        <dt>Founded</dt>
+        <dd>XautomateX · Living Proof Protocol</dd>
+        <dt>Shipped</dt>
+        <dd>15 production systems across AI, DeFi, automation</dd>
+        <dt>Clean</dt>
+        <dd>Ten years, and counting</dd>
+        <dt>Degree</dt>
+        <dd>None. Everything self-taught.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <!-- 05 · THREE MOMENTS ────────────────────────────────── -->
+  <section data-label="Three Moments" class="s-three">
+    <div class="slide-stamp">05 · THE RECEIPTS</div>
+    <div class="slide-number">05 / 14</div>
+    <div class="head">
+      <div class="eyebrow">EACH OF THESE IS ON THE RECORD</div>
+      <h2>Three moments from <em>a true story.</em></h2>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="idx">I · 2006–2008</div>
+        <h3>Three-time Michigan state wrestling champion.</h3>
+        <p>Freestyle. Lost the national title match to Logan Stieber — a future four-time NCAA champion at Ohio State.</p>
+        <div class="tag">— HOLT, MI · Ages 15–17</div>
+      </div>
+      <div class="card">
+        <div class="idx">II · CIRCA 2016</div>
+        <h3>Held hostage 12 hours. Escaped barefoot. Walked 35 miles.</h3>
+        <p>Pompano Beach, Florida. Five Haitian drug dealers. The plan: chop him up, dump the body in the bathtub.</p>
+        <div class="tag">— POMPANO BEACH → MIAMI</div>
+      </div>
+      <div class="card">
+        <div class="idx">III · 2022–2023</div>
+        <h3>One year inside a facility the ACLU calls unconstitutional.</h3>
+        <p>Arrested without questioning. Held 365 days at Alexander Farrelly. Charges dropped.</p>
+        <div class="tag">— ST. THOMAS, USVI</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 · MOMENT I — WRESTLING ─────────────────────────── -->
+  <section data-label="Moment I — Wrestling" class="moment cream">
+    <div class="slide-stamp">06 · MOMENT ONE</div>
+    <div class="slide-number">06 / 14</div>
+    <div class="num">01</div>
+    <div class="eyerow"><span class="dot"></span><span>HOLT, MI</span><span>·</span><span>2006–2008</span></div>
+    <h2>Three state titles<br/>before a driver's <em>license.</em></h2>
+    <div class="split">
+      <div class="excerpt">
+        <p>My father trained me like a Russian Olympic coach. Before school. After school. On Sundays, when the other dads slept in.</p>
+        <p>I won three state championships in Michigan. I lost the national final to the man who went on to win four NCAAs.</p>
+        <p class="beat">I was fourteen the first time I smoked a joint.</p>
+        <p>This is not a broken-home story. Two parents who loved me. Two brothers who still do. I did everything I was supposed to do, and I still ended up on the bathroom floor of a gas station in Florida.</p>
+        <span class="tag">— excerpt, “Holt” (ch. 1)</span>
+      </div>
+      <div class="meta">
+        <div class="row"><span class="k">State titles</span><span class="v">3</span></div>
+        <div class="row"><span class="k">National final</span><span class="v">vs. Stieber</span></div>
+        <div class="row"><span class="k">First joint</span><span class="v">Age 14</span></div>
+        <div class="row"><span class="k">Chapter</span><span class="v">“Holt”</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 · MOMENT II — HOSTAGE ──────────────────────────── -->
+  <section data-label="Moment II — Hostage" class="moment">
+    <div class="slide-stamp">07 · MOMENT TWO</div>
+    <div class="slide-number">07 / 14</div>
+    <div class="num">02</div>
+    <div class="eyerow"><span class="dot"></span><span>POMPANO BEACH, FL</span><span>·</span><span>TWELVE HOURS</span></div>
+    <h2>Barefoot to Miami — <em>thirty-five miles.</em></h2>
+    <div class="split">
+      <div class="excerpt">
+        <p>Germ had been out of prison one day. He sat on the edge of the tub while I pissed. He watched me like I was a show he'd paid to see.</p>
+        <p>I didn't look at him. I looked at the grout between the tiles and counted.</p>
+        <p>There was a silent man with a machete pacing the hallway all night. I learned his shoes. The plan, I heard them say in the kitchen, was the bathtub.</p>
+        <p class="break">— § —</p>
+        <p class="beat">Three of them went to smoke. Two left the front door open.</p>
+        <p>No shoes. I walked until the sun came up.</p>
+        <span class="tag">— excerpt, “Held” · pompano beach, fl</span>
+      </div>
+      <div class="meta">
+        <div class="row"><span class="k">Assailants</span><span class="v">5</span></div>
+        <div class="row"><span class="k">Held</span><span class="v">12 hrs</span></div>
+        <div class="row"><span class="k">Walked</span><span class="v">~35 mi barefoot</span></div>
+        <div class="row"><span class="k">Chapter</span><span class="v">“Held”</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 08 · MOMENT III — FARRELLY ────────────────────────── -->
+  <section data-label="Moment III — Farrelly" class="moment light">
+    <div class="slide-stamp">08 · MOMENT THREE</div>
+    <div class="slide-number">08 / 14</div>
+    <div class="num">03</div>
+    <div class="eyerow"><span class="dot"></span><span>ALEXANDER FARRELLY CJC</span><span>·</span><span>365 DAYS</span></div>
+    <h2>One year inside for <em>a crime he didn't commit.</em></h2>
+    <div class="split">
+      <div class="excerpt">
+        <p>They never questioned me. They put me in a van.</p>
+        <p>My first cellmate had killed his wife with a hammer. He told me on night three. A federal court has ruled this place unconstitutional. The ACLU has the affidavits.</p>
+        <p class="beat">A cell on the block burned for an hour before anyone came.</p>
+        <p>I counted the days on the wall with the edge of a commissary spoon. Three hundred and sixty-five of them. Then they dropped the charges and opened the gate and the year was already gone.</p>
+        <span class="tag">— excerpt, “365” · alexander farrelly cjc</span>
+      </div>
+      <div class="meta">
+        <div class="row"><span class="k">Days held</span><span class="v">365</span></div>
+        <div class="row"><span class="k">Court ruling</span><span class="v">Unconstitutional</span></div>
+        <div class="row"><span class="k">Outcome</span><span class="v">Charges dropped</span></div>
+        <div class="row"><span class="k">Chapter</span><span class="v">“365”</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 · THE TURN (mother quote) ──────────────────────── -->
+  <section data-label="The Turn" class="s-turn">
+    <div class="slide-stamp">09 · THE EMOTIONAL CORE</div>
+    <div class="slide-number">09 / 14</div>
+    <div class="qmark">“</div>
+    <div class="quote">I've been saving money from my paycheck<br/>to bury you.</div>
+    <div class="attribution">HIS MOTHER · AFTER THE FOURTH OVERDOSE · <span class="em">FIVE SHOTS OF NARCAN</span></div>
+  </section>
+
+  <!-- 10 · NOW ──────────────────────────────────────────── -->
+  <section data-label="Now — What He Built" class="s-now">
+    <div class="slide-stamp">10 · AND THEN HE BUILT</div>
+    <div class="slide-number">10 / 14</div>
+    <div class="left">
+      <div class="eyebrow" style="margin-bottom:20px;">PART III · STILL STANDING</div>
+      <h2>The ending isn't sobriety.<br/>It's the <em>shipping.</em></h2>
+      <p>Every morning, Del sits down at his desk and builds. Not as metaphor — as product. XautomateX ships AI solutions architecture for businesses of every size. Living Proof Protocol verifies truth on-chain. The career didn't start until after prison.</p>
+    </div>
+    <div class="right">
+      <div class="stat"><div class="n">15</div><div class="l">Production-grade systems shipped<small>AI · DeFi · Automation</small></div></div>
+      <div class="stat"><div class="n">2</div><div class="l">Companies founded<small>XautomateX · Living Proof Protocol</small></div></div>
+      <div class="stat"><div class="n">10 yrs</div><div class="l">Clean from heroin<small>After four overdoses · five shots of Narcan</small></div></div>
+      <div class="stat"><div class="n">0</div><div class="l">College degrees<small>Entirely self-taught</small></div></div>
+    </div>
+  </section>
+
+  <!-- 11 · COMPS ────────────────────────────────────────── -->
+  <section data-label="Comps" class="s-comps">
+    <div class="slide-stamp">11 · WHERE IT SITS ON THE SHELF</div>
+    <div class="slide-number">11 / 14</div>
+    <div class="head">
+      <h2>The <em>shelf</em> already exists.</h2>
+      <p>Four proven comps, each a bestseller or book-club pick. <em>Living Proof</em> is the only title that spans all four categories at once.</p>
+    </div>
+    <div class="grid">
+      <div class="book">
+        <div class="cover"><div class="sales">5M+ COPIES</div><div class="tt">Writing<br/>My<br/>Wrongs</div><div class="au">Shaka Senghor</div></div>
+        <div class="txt"><h4>Writing My Wrongs</h4><div class="au2">Shaka Senghor · 2016</div><p>Prison-to-purpose template. <em>Living Proof</em> adds wrongful conviction + tech.</p></div>
+      </div>
+      <div class="book">
+        <div class="cover"><div class="sales">OPRAH</div><div class="tt">The Sun<br/>Does<br/>Shine</div><div class="au">A. R. Hinton</div></div>
+        <div class="txt"><h4>The Sun Does Shine</h4><div class="au2">A. R. Hinton · 2018</div><p>Same wrongful-incarceration thread; younger, faster, broader.</p></div>
+      </div>
+      <div class="book">
+        <div class="cover"><div class="sales">4.5M+</div><div class="tt">Can't<br/>Hurt<br/>Me</div><div class="au">David Goggins</div></div>
+        <div class="txt"><h4>Can't Hurt Me</h4><div class="au2">David Goggins · 2018</div><p>Adversity arc, but documented events + real recovery.</p></div>
+      </div>
+      <div class="book us">
+        <div class="cover"><div class="sales">THIS BOOK</div><div class="tt">LIVING<br/>PROOF</div><div class="au">Del Crawford</div></div>
+        <div class="txt"><h4>Living Proof</h4><div class="au2">Del Crawford · 2026</div><p>Only memoir spanning all four — prison, wrongful, addiction, founder.</p></div>
+      </div>
+      <div class="book">
+        <div class="cover"><div class="sales">NYT</div><div class="tt">A Piece<br/>of<br/>Cake</div><div class="au">Cupcake Brown</div></div>
+        <div class="txt"><h4>A Piece of Cake</h4><div class="au2">Cupcake Brown · 2006</div><p>Unflinching honesty + transformation. Hide nothing.</p></div>
+      </div>
+      <div class="book">
+        <div class="cover"><div class="sales">FILM</div><div class="tt">Beautiful<br/>Boy</div><div class="au">David Sheff</div></div>
+        <div class="txt"><h4>Beautiful Boy</h4><div class="au2">David Sheff · 2008</div><p>Parent POV on addiction. Living Proof gives the addict's.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 · MARKET ───────────────────────────────────────── -->
+  <section data-label="Market" class="s-mkt">
+    <div class="slide-stamp">12 · MARKET POSITIONING</div>
+    <div class="slide-number">12 / 14</div>
+    <h2>Four markets. <em>One book.</em></h2>
+    <div class="sub">No competing title spans all four of these categories. <em>Living Proof</em> does — which is the commercial argument.</div>
+    <div class="tbl">
+      <div class="hd">Market</div>
+      <div class="hd">Annual Sales</div>
+      <div class="hd">Del's Angle</div>
+
+      <div class="cell market">True Crime / Memoir</div>
+      <div class="cell size">$600M+</div>
+      <div class="cell angle">Armed robbery · hostage (35-mi barefoot escape) · police chase on video · wrongful incarceration</div>
+
+      <div class="cell market">Addiction / Recovery</div>
+      <div class="cell size">$200M+</div>
+      <div class="cell angle">Four ODs · five Narcan · mother's funeral savings · ten years clean</div>
+
+      <div class="cell market">Wrongful Conviction</div>
+      <div class="cell size" style="font-size:44px;">Post-<em style="font-style:italic;">Just Mercy</em></div>
+      <div class="cell angle">ACLU-documented facility · arrested without questioning · charges dropped</div>
+
+      <div class="cell market">Self-Improvement</div>
+      <div class="cell size">$800M+</div>
+      <div class="cell angle">No degree → AI Solutions Architect · 15 production systems · founder</div>
+    </div>
+    <div class="total">
+      <div class="lbl">Combined addressable readership</div>
+      <div class="big"><em>$1.6B+</em></div>
+    </div>
+  </section>
+
+  <!-- 13 · PLATFORM ─────────────────────────────────────── -->
+  <section data-label="Platform & Launch" class="s-plat light">
+    <div class="slide-stamp">13 · PLATFORM & LAUNCH</div>
+    <div class="slide-number">13 / 14</div>
+    <h2>Already <em>camera-ready.</em></h2>
+    <div class="sub">Del is photogenic, articulate, and web-native. Three audiences already know him — three more are one interview away.</div>
+    <div class="cols">
+      <div class="col">
+        <h3>Owned</h3>
+        <ul>
+          <li>XautomateX.com<small>Active portfolio · 15 systems</small></li>
+          <li>LivingProofDev.com<small>Personal brand · blockchain</small></li>
+          <li>LinkedIn · X · Facebook · YouTube<small>Motorcycle-chase footage in the chapter is already on YouTube</small></li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3>Communities</h3>
+        <ul>
+          <li>Recovery: AA/NA, treatment centers<small>21M Americans in recovery</small></li>
+          <li>Wrestling: Michigan HS/collegiate<small>Three state titles generates ongoing recognition</small></li>
+          <li>Tech: AI Leadership Institute, Solana, Maven<small>Certified by Noelle Russell's program</small></li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3>Launch Plan</h3>
+        <ul>
+          <li>Podcast tour: true crime, recovery, tech<small>#1 podcast genre is true crime — 40% of listeners</small></li>
+          <li>Innocence Project / ACLU partnership<small>Wrongful-conviction advocacy tie-in</small></li>
+          <li>TikTok / Reels series: “Living Proof”<small>Motorcycle video is the viral hook</small></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14 · ASK ──────────────────────────────────────────── -->
+  <section data-label="The Ask" class="s-ask">
+    <div class="slide-stamp">14 · THE ASK</div>
+    <div class="slide-number">14 / 14</div>
+    <div class="spec">55,000 WORDS · 11 CHAPTERS · COMPLETE FIRST DRAFT · 4 SAMPLES ATTACHED</div>
+    <h2>Let's publish<br/><em>the receipts.</em></h2>
+    <div class="rule"></div>
+    <div class="contact">
+      <div><span>Author</span>Del Crawford</div>
+      <div><span>Email</span>del@xautomatex.com</div>
+      <div><span>Site</span>livingproofdev.com</div>
+      <div><span>LinkedIn</span>/in/delcrawford</div>
+    </div>
+  </section>
+
+</deck-stage>
+
+<!-- ─────────────────────────────────────────────────────
+     TWEAKS PANEL (hidden until host posts __activate_edit_mode)
+     ───────────────────────────────────────────────────── -->
+<div id="tweaks" role="dialog" aria-label="Tweaks">
+  <h4>Tweaks</h4>
+
+  <div class="group">
+    <label>Tone</label>
+    <div class="chips" data-key="tone">
+      <button class="chip" data-val="cinematic">Cinematic</button>
+      <button class="chip" data-val="documentary">Documentary</button>
+      <button class="chip" data-val="literary">Literary</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <label>Accent</label>
+    <div class="chips" data-key="accent">
+      <button class="chip swatch sw-crimson" data-val="crimson" title="Crimson"></button>
+      <button class="chip swatch sw-amber" data-val="amber" title="Amber"></button>
+      <button class="chip swatch sw-bone" data-val="bone" title="Bone"></button>
+      <button class="chip swatch sw-cobalt" data-val="cobalt" title="Cobalt"></button>
+    </div>
+  </div>
+
+  <div class="group">
+    <label>Film grain</label>
+    <label class="switch"><input type="checkbox" id="tw-grain"> <span>Enable grain overlay</span></label>
+  </div>
+
+  <div class="group">
+    <label>Working title</label>
+    <div class="chips" data-key="workingTitle">
+      <button class="chip" data-val="LIVING PROOF">Living Proof</button>
+      <button class="chip" data-val="STILL STANDING">Still Standing</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <label>Author display</label>
+    <input type="text" id="tw-author" />
+  </div>
+</div>
+
+<!-- Speaker notes (brief talking points per slide) -->
+<script type="application/json" id="speaker-notes">
+[
+"Title slide. Set the room: this is a memoir pitch — 55,000 words, complete manuscript, four sample chapters in your hands. Author is Del Crawford. Pause. Then flip.",
+"Cold open. Read the officer's line out loud. That's how chapter one opens — no exposition, just handcuffs in a bar on a Saturday night in St. Thomas. He's innocent, and he loses a year for it. That's act three of the book. I'm going to walk you through how we get there.",
+"One-sentence pitch. Writing My Wrongs meets Can't Hurt Me — but with the tech-founder ending neither book has. The comps all sold big; none of them cover the full territory Del covers.",
+"Who Del is today, at 35, without a college degree: certified AI Solutions Architect, self-taught blockchain developer, founder of two companies, fifteen production systems shipped, ten years clean. This is the reason the book works — every dark chapter is told from stable ground.",
+"Three moments on the record — meaning each is documented, on video, on court filings, or in ACLU reports. Wrestling, hostage, and a year inside an unconstitutional facility. I'll take them one at a time.",
+"Moment one. Three Michigan state titles before he had a driver's license. Important because this is not a broken-home story — good family, loving parents, father who coached him like Russian Olympic staff. That's what makes everything after harder to explain and more important to tell.",
+"Moment two. Pompano Beach. Five drug dealers, twelve hours, a plan to dismember him. He ran barefoot and walked thirty-five miles. This is the chapter readers will tell other people about. It's survival-genre gold.",
+"Moment three. 365 days inside Alexander Farrelly — a facility a federal court has ruled unconstitutional and the ACLU has documented. Arrested without questioning. Charges dropped. This is the wrongful-conviction pillar and it connects us directly to the Just Mercy / Innocence Project readership.",
+"The emotional core of the book. His mother — struggling to put food on the table — tells him she's been saving money to bury him. That line saved his life. That's the moment every memoir needs, and this one earned it the hard way.",
+"Now — what he built. The ending isn't sobriety. It's shipping product. Fifteen systems, two companies, zero degrees. This is the founder beat that separates the book from every other recovery memoir on the shelf.",
+"Comps. Writing My Wrongs, The Sun Does Shine, Can't Hurt Me, A Piece of Cake, Beautiful Boy. All proven. All bestseller or book-club tier. Living Proof is the only title that sits at the intersection of all of them.",
+"Market. Four proven categories. Annual combined spend north of one-point-six billion. No competing title spans all four. That's the commercial argument in one slide.",
+"Platform. Owned channels, built-in communities, a launch plan. Del is camera-ready, articulate, already has footage going viral — the motorcycle chase is on YouTube right now.",
+"The ask. Fifty-five thousand words, eleven chapters, complete first draft, four sample chapters attached. Let's publish the receipts. Contact info on screen. Thank you."
+]
+</script>
+
+<!-- Tweaks wiring + edit-mode contract -->
+<script>
+(() => {
+  const state = { ...TWEAK_DEFAULTS };
+
+  function apply() {
+    document.documentElement.setAttribute('data-tone', state.tone);
+    document.documentElement.setAttribute('data-accent', state.accent);
+    document.documentElement.setAttribute('data-grain', state.grain ? 'true' : 'false');
+
+    const big = document.getElementById('bigTitle');
+    if (big) {
+      if (state.workingTitle === 'STILL STANDING') {
+        big.innerHTML = 'STILL <span class="of">STANDING</span>';
+      } else {
+        big.innerHTML = 'LIVING <span class="of">PROOF</span>';
+      }
+    }
+    const au = document.getElementById('authorLine');
+    if (au) au.textContent = 'by ' + state.author;
+  }
+
+  function setKey(k, v) {
+    state[k] = v;
+    apply();
+    paintChips();
+    try {
+      window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { [k]: v } }, '*');
+    } catch (e) {}
+  }
+
+  function paintChips() {
+    document.querySelectorAll('#tweaks .chips').forEach(group => {
+      const k = group.dataset.key;
+      group.querySelectorAll('.chip').forEach(btn => {
+        btn.setAttribute('aria-pressed', btn.dataset.val === String(state[k]) ? 'true' : 'false');
+      });
+    });
+    const g = document.getElementById('tw-grain');
+    if (g) g.checked = !!state.grain;
+    const a = document.getElementById('tw-author');
+    if (a && document.activeElement !== a) a.value = state.author;
+  }
+
+  // Wire up on DOM ready.
+  function wire() {
+    document.querySelectorAll('#tweaks .chips').forEach(group => {
+      const k = group.dataset.key;
+      group.addEventListener('click', (e) => {
+        const btn = e.target.closest('.chip');
+        if (!btn) return;
+        setKey(k, btn.dataset.val);
+      });
+    });
+    document.getElementById('tw-grain').addEventListener('change', (e) => setKey('grain', !!e.target.checked));
+    const au = document.getElementById('tw-author');
+    au.addEventListener('input', (e) => setKey('author', e.target.value));
+  }
+
+  // Edit-mode: register listener BEFORE announcing availability.
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || typeof d !== 'object') return;
+    if (d.type === '__activate_edit_mode') {
+      document.getElementById('tweaks').setAttribute('data-open', '');
+      paintChips();
+    } else if (d.type === '__deactivate_edit_mode') {
+      document.getElementById('tweaks').removeAttribute('data-open');
+    }
+  });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { wire(); apply(); paintChips(); });
+  } else {
+    wire(); apply(); paintChips();
+  }
+
+  try { window.parent.postMessage({ type: '__edit_mode_available' }, '*'); } catch (e) {}
+})();
+</script>
+
+</body>
+</html>

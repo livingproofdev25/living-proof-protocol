@@ -1,0 +1,1325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>The Mint — Living Proof</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Special+Elite&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0a0a0a; font-family: Geist, system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<div id="root" data-screen-label="The Mint 0s"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+
+// animations.jsx
+// Reusable animation starter: Stage, Timeline, Sprite, easing helpers.
+// Usage (in an HTML file that loads React + Babel):
+//
+//   <Stage width={1280} height={720} duration={10} background="#f6f4ef">
+//     <MyScene />
+//   </Stage>
+//
+// Inside <Stage>, any child can call useTime() to read the current
+// playhead (seconds). Or wrap content in <Sprite start={1} end={4}>...</Sprite>
+// to only render during that window -- children receive a `localTime` and
+// `progress` via the useSprite() hook.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Easing functions (hand-rolled, Popmotion-style) ─────────────────────────
+// All easings take t ∈ [0,1] and return eased t ∈ [0,1] (may overshoot for back/elastic).
+const Easing = {
+  linear: (t) => t,
+
+  // Quad
+  easeInQuad:    (t) => t * t,
+  easeOutQuad:   (t) => t * (2 - t),
+  easeInOutQuad: (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
+
+  // Cubic
+  easeInCubic:    (t) => t * t * t,
+  easeOutCubic:   (t) => (--t) * t * t + 1,
+  easeInOutCubic: (t) => (t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1),
+
+  // Quart
+  easeInQuart:    (t) => t * t * t * t,
+  easeOutQuart:   (t) => 1 - (--t) * t * t * t,
+  easeInOutQuart: (t) => (t < 0.5 ? 8 * t * t * t * t : 1 - 8 * (--t) * t * t * t),
+
+  // Expo
+  easeInExpo:  (t) => (t === 0 ? 0 : Math.pow(2, 10 * (t - 1))),
+  easeOutExpo: (t) => (t === 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+  easeInOutExpo: (t) => {
+    if (t === 0) return 0;
+    if (t === 1) return 1;
+    if (t < 0.5) return 0.5 * Math.pow(2, 20 * t - 10);
+    return 1 - 0.5 * Math.pow(2, -20 * t + 10);
+  },
+
+  // Sine
+  easeInSine:    (t) => 1 - Math.cos((t * Math.PI) / 2),
+  easeOutSine:   (t) => Math.sin((t * Math.PI) / 2),
+  easeInOutSine: (t) => -(Math.cos(Math.PI * t) - 1) / 2,
+
+  // Back (overshoot)
+  easeOutBack: (t) => {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  },
+  easeInBack: (t) => {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return c3 * t * t * t - c1 * t * t;
+  },
+  easeInOutBack: (t) => {
+    const c1 = 1.70158, c2 = c1 * 1.525;
+    return t < 0.5
+      ? (Math.pow(2 * t, 2) * ((c2 + 1) * 2 * t - c2)) / 2
+      : (Math.pow(2 * t - 2, 2) * ((c2 + 1) * (t * 2 - 2) + c2) + 2) / 2;
+  },
+
+  // Elastic
+  easeOutElastic: (t) => {
+    const c4 = (2 * Math.PI) / 3;
+    if (t === 0) return 0;
+    if (t === 1) return 1;
+    return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+  },
+};
+
+// ── Core interpolation helpers ──────────────────────────────────────────────
+
+// Clamp a value to [min, max]
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+// interpolate([0, 0.5, 1], [0, 100, 50], ease?) -> fn(t)
+// Popmotion-style: linearly maps t across input keyframes to output values,
+// with optional easing per segment (single fn or array of fns).
+function interpolate(input, output, ease = Easing.linear) {
+  return (t) => {
+    if (t <= input[0]) return output[0];
+    if (t >= input[input.length - 1]) return output[output.length - 1];
+    for (let i = 0; i < input.length - 1; i++) {
+      if (t >= input[i] && t <= input[i + 1]) {
+        const span = input[i + 1] - input[i];
+        const local = span === 0 ? 0 : (t - input[i]) / span;
+        const easeFn = Array.isArray(ease) ? (ease[i] || Easing.linear) : ease;
+        const eased = easeFn(local);
+        return output[i] + (output[i + 1] - output[i]) * eased;
+      }
+    }
+    return output[output.length - 1];
+  };
+}
+
+// animate({from, to, start, end, ease})(t) — simpler single-segment tween.
+// Returns `from` before `start`, `to` after `end`.
+function animate({ from = 0, to = 1, start = 0, end = 1, ease = Easing.easeInOutCubic }) {
+  return (t) => {
+    if (t <= start) return from;
+    if (t >= end) return to;
+    const local = (t - start) / (end - start);
+    return from + (to - from) * ease(local);
+  };
+}
+
+// ── Timeline context ────────────────────────────────────────────────────────
+
+const TimelineContext = React.createContext({ time: 0, duration: 10, playing: false });
+
+const useTime = () => React.useContext(TimelineContext).time;
+const useTimeline = () => React.useContext(TimelineContext);
+
+// ── Sprite ──────────────────────────────────────────────────────────────────
+// Renders children only when the playhead is inside [start, end]. Provides
+// a sub-context with `localTime` (seconds since start) and `progress` (0..1).
+//
+//   <Sprite start={2} end={5}>
+//     {({ localTime, progress }) => <Thing x={progress * 100} />}
+//   </Sprite>
+//
+// Or as a plain wrapper — children can call useSprite() themselves.
+
+const SpriteContext = React.createContext({ localTime: 0, progress: 0, duration: 0 });
+const useSprite = () => React.useContext(SpriteContext);
+
+function Sprite({ start = 0, end = Infinity, children, keepMounted = false }) {
+  const { time } = useTimeline();
+  const visible = time >= start && time <= end;
+  if (!visible && !keepMounted) return null;
+
+  const duration = end - start;
+  const localTime = Math.max(0, time - start);
+  const progress = duration > 0 && isFinite(duration)
+    ? clamp(localTime / duration, 0, 1)
+    : 0;
+
+  const value = { localTime, progress, duration, visible };
+
+  return (
+    <SpriteContext.Provider value={value}>
+      {typeof children === 'function' ? children(value) : children}
+    </SpriteContext.Provider>
+  );
+}
+
+// ── Sample sprite components ────────────────────────────────────────────────
+
+// TextSprite: fades/slides text in on entry, holds, then fades out on exit.
+// Props: text, x, y, size, color, font, entryDur, exitDur, align
+function TextSprite({
+  text,
+  x = 0, y = 0,
+  size = 48,
+  color = '#111',
+  font = 'Inter, system-ui, sans-serif',
+  weight = 600,
+  entryDur = 0.45,
+  exitDur = 0.35,
+  entryEase = Easing.easeOutBack,
+  exitEase = Easing.easeInCubic,
+  align = 'left',
+  letterSpacing = '-0.01em',
+}) {
+  const { localTime, duration } = useSprite();
+  const exitStart = Math.max(0, duration - exitDur);
+
+  let opacity = 1;
+  let ty = 0;
+
+  if (localTime < entryDur) {
+    const t = entryEase(clamp(localTime / entryDur, 0, 1));
+    opacity = t;
+    ty = (1 - t) * 16;
+  } else if (localTime > exitStart) {
+    const t = exitEase(clamp((localTime - exitStart) / exitDur, 0, 1));
+    opacity = 1 - t;
+    ty = -t * 8;
+  }
+
+  const translateX = align === 'center' ? '-50%' : align === 'right' ? '-100%' : '0';
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: x, top: y,
+      transform: `translate(${translateX}, ${ty}px)`,
+      opacity,
+      fontFamily: font,
+      fontSize: size,
+      fontWeight: weight,
+      color,
+      letterSpacing,
+      whiteSpace: 'pre',
+      lineHeight: 1.1,
+      willChange: 'transform, opacity',
+    }}>
+      {text}
+    </div>
+  );
+}
+
+// ImageSprite: scales + fades in; optional Ken Burns drift during hold.
+function ImageSprite({
+  src,
+  x = 0, y = 0,
+  width = 400, height = 300,
+  entryDur = 0.6,
+  exitDur = 0.4,
+  kenBurns = false,
+  kenBurnsScale = 1.08,
+  radius = 12,
+  fit = 'cover',
+  placeholder = null, // {label: string} for striped placeholder
+}) {
+  const { localTime, duration } = useSprite();
+  const exitStart = Math.max(0, duration - exitDur);
+
+  let opacity = 1;
+  let scale = 1;
+
+  if (localTime < entryDur) {
+    const t = Easing.easeOutCubic(clamp(localTime / entryDur, 0, 1));
+    opacity = t;
+    scale = 0.96 + 0.04 * t;
+  } else if (localTime > exitStart) {
+    const t = Easing.easeInCubic(clamp((localTime - exitStart) / exitDur, 0, 1));
+    opacity = 1 - t;
+    scale = (kenBurns ? kenBurnsScale : 1) + 0.02 * t;
+  } else if (kenBurns) {
+    const holdSpan = exitStart - entryDur;
+    const holdT = holdSpan > 0 ? (localTime - entryDur) / holdSpan : 0;
+    scale = 1 + (kenBurnsScale - 1) * holdT;
+  }
+
+  const content = placeholder ? (
+    <div style={{
+      width: '100%', height: '100%',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'repeating-linear-gradient(135deg, #e9e6df 0 10px, #dcd8cf 10px 20px)',
+      color: '#6b6458',
+      fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+      fontSize: 13,
+      letterSpacing: '0.04em',
+      textTransform: 'uppercase',
+    }}>
+      {placeholder.label || 'image'}
+    </div>
+  ) : (
+    <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: fit, display: 'block' }} />
+  );
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: x, top: y,
+      width, height,
+      opacity,
+      transform: `scale(${scale})`,
+      transformOrigin: 'center',
+      borderRadius: radius,
+      overflow: 'hidden',
+      willChange: 'transform, opacity',
+    }}>
+      {content}
+    </div>
+  );
+}
+
+// RectSprite: simple rectangle that animates position/size/color via props.
+// Useful demo primitive — takes a `render` fn for per-frame customization.
+function RectSprite({
+  x = 0, y = 0,
+  width = 100, height = 100,
+  color = '#111',
+  radius = 8,
+  entryDur = 0.4,
+  exitDur = 0.3,
+  render, // optional: (ctx) => style overrides
+}) {
+  const spriteCtx = useSprite();
+  const { localTime, duration } = spriteCtx;
+  const exitStart = Math.max(0, duration - exitDur);
+
+  let opacity = 1;
+  let scale = 1;
+
+  if (localTime < entryDur) {
+    const t = Easing.easeOutBack(clamp(localTime / entryDur, 0, 1));
+    opacity = clamp(localTime / entryDur, 0, 1);
+    scale = 0.4 + 0.6 * t;
+  } else if (localTime > exitStart) {
+    const t = Easing.easeInQuad(clamp((localTime - exitStart) / exitDur, 0, 1));
+    opacity = 1 - t;
+    scale = 1 - 0.15 * t;
+  }
+
+  const overrides = render ? render(spriteCtx) : {};
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: x, top: y,
+      width, height,
+      background: color,
+      borderRadius: radius,
+      opacity,
+      transform: `scale(${scale})`,
+      transformOrigin: 'center',
+      willChange: 'transform, opacity',
+      ...overrides,
+    }} />
+  );
+}
+
+
+function Stage({
+  width = 1280,
+  height = 720,
+  duration = 10,
+  background = '#f6f4ef',
+  fps = 60,
+  loop = true,
+  autoplay = true,
+  persistKey = 'animstage',
+  children,
+}) {
+  const [time, setTime] = React.useState(() => {
+    try {
+      const v = parseFloat(localStorage.getItem(persistKey + ':t') || '0');
+      return isFinite(v) ? clamp(v, 0, duration) : 0;
+    } catch { return 0; }
+  });
+  const [playing, setPlaying] = React.useState(autoplay);
+  const [hoverTime, setHoverTime] = React.useState(null);
+  const [scale, setScale] = React.useState(1);
+
+  const stageRef = React.useRef(null);
+  const canvasRef = React.useRef(null);
+  const rafRef = React.useRef(null);
+  const lastTsRef = React.useRef(null);
+
+  // Persist playhead
+  React.useEffect(() => {
+    try { localStorage.setItem(persistKey + ':t', String(time)); } catch {}
+  }, [time, persistKey]);
+
+  // Auto-scale to fit viewport
+  React.useEffect(() => {
+    if (!stageRef.current) return;
+    const el = stageRef.current;
+    const measure = () => {
+      const barH = 44; // playback bar height
+      const s = Math.min(
+        el.clientWidth / width,
+        (el.clientHeight - barH) / height
+      );
+      setScale(Math.max(0.05, s));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [width, height]);
+
+  // Animation loop
+  React.useEffect(() => {
+    if (!playing) {
+      lastTsRef.current = null;
+      return;
+    }
+    const step = (ts) => {
+      if (lastTsRef.current == null) lastTsRef.current = ts;
+      const dt = (ts - lastTsRef.current) / 1000;
+      lastTsRef.current = ts;
+      setTime((t) => {
+        let next = t + dt;
+        if (next >= duration) {
+          if (loop) next = next % duration;
+          else { next = duration; setPlaying(false); }
+        }
+        return next;
+      });
+      rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      lastTsRef.current = null;
+    };
+  }, [playing, duration, loop]);
+
+  // Keyboard: space = play/pause, ← → = seek
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setPlaying(p => !p);
+      } else if (e.code === 'ArrowLeft') {
+        setTime(t => clamp(t - (e.shiftKey ? 1 : 0.1), 0, duration));
+      } else if (e.code === 'ArrowRight') {
+        setTime(t => clamp(t + (e.shiftKey ? 1 : 0.1), 0, duration));
+      } else if (e.key === '0' || e.code === 'Home') {
+        setTime(0);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [duration]);
+
+  const displayTime = hoverTime != null ? hoverTime : time;
+
+  const ctxValue = React.useMemo(
+    () => ({ time: displayTime, duration, playing, setTime, setPlaying }),
+    [displayTime, duration, playing]
+  );
+
+  return (
+    <div
+      ref={stageRef}
+      style={{
+        position: 'absolute', inset: 0,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center',
+        background: '#0a0a0a',
+        fontFamily: 'Inter, system-ui, sans-serif',
+      }}
+    >
+      {/* Canvas area — vertically centered in remaining space */}
+      <div style={{
+        flex: 1,
+        width: '100%',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        overflow: 'hidden',
+        minHeight: 0,
+      }}>
+        <div
+          ref={canvasRef}
+          style={{
+            width, height,
+            background,
+            position: 'relative',
+            transform: `scale(${scale})`,
+            transformOrigin: 'center',
+            flexShrink: 0,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+            overflow: 'hidden',
+          }}
+        >
+          <TimelineContext.Provider value={ctxValue}>
+            {children}
+          </TimelineContext.Provider>
+        </div>
+      </div>
+
+      {/* Playback bar — stacked below canvas, never overlapping */}
+      <PlaybackBar
+        time={displayTime}
+        actualTime={time}
+        duration={duration}
+        playing={playing}
+        onPlayPause={() => setPlaying(p => !p)}
+        onReset={() => { setTime(0); }}
+        onSeek={(t) => setTime(t)}
+        onHover={(t) => setHoverTime(t)}
+      />
+    </div>
+  );
+}
+
+// ── Playback bar ────────────────────────────────────────────────────────────
+// Play/pause, return-to-begin, scrub track, time display.
+// Uses fixed-width time fields so layout doesn't thrash.
+
+function PlaybackBar({ time, duration, playing, onPlayPause, onReset, onSeek, onHover }) {
+  const trackRef = React.useRef(null);
+  const [dragging, setDragging] = React.useState(false);
+
+  const timeFromEvent = React.useCallback((e) => {
+    const rect = trackRef.current.getBoundingClientRect();
+    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    return x * duration;
+  }, [duration]);
+
+  const onTrackMove = (e) => {
+    if (!trackRef.current) return;
+    const t = timeFromEvent(e);
+    if (dragging) {
+      onSeek(t);
+    } else {
+      onHover(t);
+    }
+  };
+
+  const onTrackLeave = () => {
+    if (!dragging) onHover(null);
+  };
+
+  const onTrackDown = (e) => {
+    setDragging(true);
+    const t = timeFromEvent(e);
+    onSeek(t);
+    onHover(null);
+  };
+
+  React.useEffect(() => {
+    if (!dragging) return;
+    const onUp = () => setDragging(false);
+    const onMove = (e) => {
+      if (!trackRef.current) return;
+      const t = timeFromEvent(e);
+      onSeek(t);
+    };
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('mousemove', onMove);
+    };
+  }, [dragging, timeFromEvent, onSeek]);
+
+  const pct = duration > 0 ? (time / duration) * 100 : 0;
+  const fmt = (t) => {
+    const total = Math.max(0, t);
+    const m = Math.floor(total / 60);
+    const s = Math.floor(total % 60);
+    const cs = Math.floor((total * 100) % 100);
+    return `${String(m).padStart(1, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+  };
+
+  const mono = 'JetBrains Mono, ui-monospace, SFMono-Regular, monospace';
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '8px 16px',
+      background: 'rgba(20,20,20,0.92)',
+      borderTop: '1px solid rgba(255,255,255,0.08)',
+      width: '100%',
+      maxWidth: 680,
+      alignSelf: 'center',
+
+      borderRadius: 8,
+      color: '#f6f4ef',
+      fontFamily: 'Inter, system-ui, sans-serif',
+      userSelect: 'none',
+      flexShrink: 0,
+    }}>
+      <IconButton onClick={onReset} title="Return to start (0)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M3 2v10M12 2L5 7l7 5V2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
+        </svg>
+      </IconButton>
+      <IconButton onClick={onPlayPause} title="Play/pause (space)">
+        {playing ? (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="3" y="2" width="3" height="10" fill="currentColor"/>
+            <rect x="8" y="2" width="3" height="10" fill="currentColor"/>
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M3 2l9 5-9 5V2z" fill="currentColor"/>
+          </svg>
+        )}
+      </IconButton>
+
+      {/* Current time: fixed width so it doesn't thrash */}
+      <div style={{
+        fontFamily: mono,
+        fontSize: 12,
+        fontVariantNumeric: 'tabular-nums',
+        width: 64, textAlign: 'right',
+        color: '#f6f4ef',
+      }}>
+        {fmt(time)}
+      </div>
+
+      {/* Scrub track */}
+      <div
+        ref={trackRef}
+        onMouseMove={onTrackMove}
+        onMouseLeave={onTrackLeave}
+        onMouseDown={onTrackDown}
+        style={{
+          flex: 1,
+          height: 22,
+          position: 'relative',
+          cursor: 'pointer',
+          display: 'flex', alignItems: 'center',
+        }}
+      >
+        <div style={{
+          position: 'absolute',
+          left: 0, right: 0, height: 4,
+          background: 'rgba(255,255,255,0.12)',
+          borderRadius: 2,
+        }}/>
+        <div style={{
+          position: 'absolute',
+          left: 0, width: `${pct}%`, height: 4,
+          background: 'oklch(72% 0.12 250)',
+          borderRadius: 2,
+        }}/>
+        <div style={{
+          position: 'absolute',
+          left: `${pct}%`, top: '50%',
+          width: 12, height: 12,
+          marginLeft: -6, marginTop: -6,
+          background: '#fff',
+          borderRadius: 6,
+          boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+        }}/>
+      </div>
+
+      {/* Duration: fixed width */}
+      <div style={{
+        fontFamily: mono,
+        fontSize: 12,
+        fontVariantNumeric: 'tabular-nums',
+        width: 64, textAlign: 'left',
+        color: 'rgba(246,244,239,0.55)',
+      }}>
+        {fmt(duration)}
+      </div>
+    </div>
+  );
+}
+
+function IconButton({ children, onClick, title }) {
+  const [hover, setHover] = React.useState(false);
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        width: 28, height: 28,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: hover ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: 6,
+        color: '#f6f4ef',
+        cursor: 'pointer',
+        padding: 0,
+        transition: 'background 120ms',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+
+Object.assign(window, {
+  Easing, interpolate, animate, clamp,
+  TimelineContext, useTime, useTimeline,
+  Sprite, SpriteContext, useSprite,
+  TextSprite, ImageSprite, RectSprite,
+  Stage, PlaybackBar,
+});
+
+
+</script>
+
+<script type="text/babel">
+const { useEffect: uE, useRef: uR, useState: uS } = React;
+
+const PAPER = '#f6f3ec';
+const INK = '#14110e';
+const INK_2 = 'rgba(20,17,14,0.7)';
+const INK_3 = 'rgba(20,17,14,0.45)';
+const INK_4 = 'rgba(20,17,14,0.18)';
+const RULE = 'rgba(20,17,14,0.14)';
+const SURFACE = '#ffffff';
+const CRIMSON = 'oklch(0.52 0.17 28)';
+const VERIFIED = 'oklch(0.55 0.14 150)';
+const VERIFIED_SOFT = 'oklch(0.94 0.04 150)';
+
+const FF_DISPLAY = "'Instrument Serif', serif";
+const FF_BODY = "Geist, system-ui, sans-serif";
+const FF_MONO = "'JetBrains Mono', ui-monospace, monospace";
+
+function TimeLabel({ scene }) {
+  const t = useTime();
+  uE(() => {
+    const root = document.getElementById('root');
+    if (root) root.setAttribute('data-screen-label', scene + ' ' + Math.floor(t) + 's');
+  }, [Math.floor(t), scene]);
+  return null;
+}
+
+// ── Tiny seal mark ──
+function Mark({ size = 28, color = INK, accent = CRIMSON }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 240 240">
+      <rect x="20" y="20" width="200" height="200" fill="none" stroke={color} strokeWidth="10" />
+      <line x1="28" y1="120" x2="212" y2="120" stroke={color} strokeWidth="10" />
+      <line x1="120" y1="28" x2="120" y2="212" stroke={color} strokeWidth="10" />
+      <circle cx="120" cy="120" r="16" fill={accent} />
+    </svg>
+  );
+}
+
+// ── App chrome: header + side nav, scaled ──
+function AppChrome({ opacity = 1, dim = 1 }) {
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: PAPER, opacity }}>
+      {/* topbar */}
+      <div style={{
+        height: 72, borderBottom: `1px solid ${RULE}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 40px', opacity: dim,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <Mark size={32} />
+          <div style={{ fontFamily: FF_DISPLAY, fontSize: 32, letterSpacing: '-0.02em' }}>
+            Living <span style={{ color: CRIMSON, fontStyle: 'italic' }}>Proof</span>
+          </div>
+        </div>
+        <div style={{ fontFamily: FF_MONO, fontSize: 13, color: INK_3, letterSpacing: '0.18em' }}>
+          HOME › NEW PROOF
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            width: 300, height: 36,
+            border: `1px solid ${RULE}`, background: SURFACE,
+            display: 'flex', alignItems: 'center', padding: '0 14px',
+            fontFamily: FF_MONO, fontSize: 13, color: INK_3,
+          }}>Search… <span style={{ marginLeft: 'auto', padding: '2px 8px', border: `1px solid ${RULE}`, fontSize: 11 }}>⌘K</span></div>
+          <div style={{ width: 42, height: 42, borderRadius: '50%', background: INK, color: PAPER, display: 'grid', placeItems: 'center', fontFamily: FF_DISPLAY, fontSize: 20 }}>DR</div>
+        </div>
+      </div>
+      {/* left rail */}
+      <div style={{
+        position: 'absolute', left: 0, top: 72, bottom: 0, width: 260,
+        borderRight: `1px solid ${RULE}`, padding: '28px 20px', opacity: dim,
+      }}>
+        <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, margin: '0 0 14px' }}>RECORD</div>
+        <div style={{ padding: '10px 14px', color: INK_2, fontSize: 16 }}>The Ledger</div>
+        <div style={{ padding: '10px 14px', color: INK, fontSize: 16, background: SURFACE, borderLeft: `2px solid ${CRIMSON}` }}>New Proof</div>
+        <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, margin: '28px 0 14px' }}>PUBLIC</div>
+        <div style={{ padding: '10px 14px', color: INK_2, fontSize: 16 }}>My Profile</div>
+        <div style={{ padding: '10px 14px', color: INK_2, fontSize: 16 }}>Verifier</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Form scene with animated fills ──
+function FormScene({ t0, t }) {
+  const local = Math.max(0, t - t0);
+
+  // Title typed: 0.3 - 2.0
+  const titleTxt = '10 Years Sober';
+  const titleP = Math.max(0, Math.min(1, (local - 0.3) / 1.5));
+  const titleChars = Math.floor(titleTxt.length * titleP);
+
+  // Date fills: 2.2 - 3.0
+  const dateP = Math.max(0, Math.min(1, (local - 2.2) / 0.8));
+  const dateTxt = 'Mar 11, 2024';
+  const dateChars = Math.floor(dateTxt.length * dateP);
+
+  // Statement types: 3.2 - 7.0
+  const statementTxt = "Ten consecutive years of recovery.\nSponsor for seven. Kept the ten-year chip.";
+  const stP = Math.max(0, Math.min(1, (local - 3.2) / 3.6));
+  const stChars = Math.floor(statementTxt.length * stP);
+
+  // Evidence files drop in: 7.0, 7.6, 8.2
+  const ev = [
+    { name: 'sponsor-letter-signed.pdf', size: '92 KB', at: 7.0 },
+    { name: 'ten-year-coin-photo.jpg', size: '1.8 MB', at: 7.6 },
+    { name: 'home-group-attestation.pdf', size: '108 KB', at: 8.2 },
+  ];
+
+  // Attestors appear: 8.8, 9.3, 9.8, 10.3
+  const atts = [
+    { n: 'MW', name: 'Marcus Whitaker', role: 'Sponsor, 18 yrs', at: 8.8 },
+    { n: 'DB', name: 'Delia Brooks', role: 'Group Secretary', at: 9.3 },
+    { n: 'NA', name: 'Narcotics Anonymous', role: 'Institution', at: 9.8, inst: true },
+    { n: 'EO', name: 'Rev. Elias Okafor', role: 'Mentor', at: 10.3 },
+  ];
+
+  // Trust score ticks up: 8.5 → 11.5  (60 → 97)
+  const scoreP = Math.max(0, Math.min(1, (local - 8.5) / 3.0));
+  const score = Math.round(60 + (97 - 60) * scoreP);
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: 260, top: 72, right: 0, bottom: 0,
+      padding: '48px 72px',
+      overflow: 'hidden',
+    }}>
+      {/* page head */}
+      <div style={{ paddingBottom: 20, borderBottom: `1px solid ${RULE}`, marginBottom: 36 }}>
+        <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.24em', color: INK_3 }}>NEW PROOF · STEP 2 OF 4</div>
+        <div style={{ fontFamily: FF_DISPLAY, fontSize: 72, lineHeight: 1, letterSpacing: '-0.02em', marginTop: 8 }}>
+          State the <span style={{ fontStyle: 'italic', color: CRIMSON }}>claim</span>.
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 56 }}>
+        {/* left: form */}
+        <div>
+          {/* Title */}
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, marginBottom: 10 }}>TITLE</div>
+            <div style={{
+              padding: '16px 18px', border: `1px solid ${local > 0.2 && local < 2.4 ? CRIMSON : RULE}`,
+              background: SURFACE, fontSize: 24, color: INK,
+              fontFamily: FF_BODY, minHeight: 62,
+            }}>
+              {titleTxt.slice(0, titleChars)}
+              {titleP < 1 && titleP > 0 && <span style={{ color: CRIMSON }}>▍</span>}
+            </div>
+          </div>
+
+          {/* Date */}
+          <div style={{ marginBottom: 28, width: 320 }}>
+            <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, marginBottom: 10 }}>DATE OF RECORD</div>
+            <div style={{
+              padding: '14px 18px', border: `1px solid ${local > 2.1 && local < 3.2 ? CRIMSON : RULE}`,
+              background: SURFACE, fontSize: 18, color: dateP > 0 ? INK : INK_3,
+              fontFamily: FF_MONO, letterSpacing: '0.05em',
+            }}>
+              {dateChars > 0 ? dateTxt.slice(0, dateChars) : 'mm / dd / yyyy'}
+              {dateP < 1 && dateP > 0 && <span style={{ color: CRIMSON }}>▍</span>}
+            </div>
+          </div>
+
+          {/* Statement */}
+          <div>
+            <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, marginBottom: 10 }}>STATEMENT</div>
+            <div style={{
+              padding: '18px 20px', border: `1px solid ${local > 3.1 && local < 7.2 ? CRIMSON : RULE}`,
+              background: SURFACE, minHeight: 140,
+              fontFamily: FF_BODY, fontSize: 18, lineHeight: 1.5, color: INK,
+              whiteSpace: 'pre-wrap',
+            }}>
+              {statementTxt.slice(0, stChars)}
+              {stP < 1 && stP > 0 && <span style={{ color: CRIMSON }}>▍</span>}
+            </div>
+            <div style={{ fontFamily: FF_MONO, fontSize: 11, color: INK_3, marginTop: 6 }}>
+              {stChars} chars · aim 140–400
+            </div>
+          </div>
+        </div>
+
+        {/* right: evidence + attestors + trust */}
+        <div>
+          {/* evidence */}
+          <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, marginBottom: 10 }}>EVIDENCE · {ev.filter(e => local > e.at).length}</div>
+          <div style={{ marginBottom: 28 }}>
+            {ev.map((e, i) => {
+              const p = Math.max(0, Math.min(1, (local - e.at) / 0.5));
+              if (p === 0) return null;
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 12px', border: `1px solid ${RULE}`, background: SURFACE,
+                  marginBottom: 6,
+                  opacity: p, transform: `translateY(${(1-p) * 12}px)`,
+                }}>
+                  <div style={{
+                    width: 28, height: 34, background: '#efeadd',
+                    border: `1px solid ${RULE}`, display: 'grid', placeItems: 'center',
+                    fontFamily: FF_MONO, fontSize: 8, color: INK_3, letterSpacing: '0.08em',
+                  }}>{e.name.split('.').pop().toUpperCase()}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</div>
+                    <div style={{ fontFamily: FF_MONO, fontSize: 10, color: INK_3 }}>
+                      {e.size} · 0x{Math.floor(p*65535).toString(16).padStart(4,'0')}…
+                    </div>
+                  </div>
+                  <div style={{ color: VERIFIED, fontSize: 14 }}>✓</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* attestors */}
+          <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, marginBottom: 10 }}>ATTESTORS · {atts.filter(a => local > a.at).length}</div>
+          <div style={{ marginBottom: 28 }}>
+            {atts.map((a, i) => {
+              const p = Math.max(0, Math.min(1, (local - a.at) / 0.45));
+              if (p === 0) return null;
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 12px', border: `1px solid ${RULE}`, background: SURFACE,
+                  marginBottom: 6,
+                  opacity: p, transform: `translateX(${(1-p) * 24}px)`,
+                }}>
+                  <div style={{
+                    width: 36, height: 36,
+                    background: a.inst ? INK : '#efeadd', color: a.inst ? PAPER : INK,
+                    border: `1px solid ${a.inst ? INK : RULE}`,
+                    display: 'grid', placeItems: 'center',
+                    fontFamily: a.inst ? FF_MONO : FF_DISPLAY,
+                    fontSize: a.inst ? 11 : 18, letterSpacing: a.inst ? '0.1em' : 0,
+                  }}>{a.n}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: INK }}>{a.name}</div>
+                    <div style={{ fontFamily: FF_MONO, fontSize: 10, color: INK_3, letterSpacing: '0.12em', textTransform: 'uppercase' }}>{a.role}</div>
+                  </div>
+                  <div style={{ color: VERIFIED, fontSize: 12 }}>✓</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Trust score */}
+          <div style={{ fontFamily: FF_MONO, fontSize: 11, letterSpacing: '0.22em', color: INK_3, marginBottom: 10 }}>PROJECTED TRUST</div>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 16,
+            padding: '18px 20px',
+            background: VERIFIED_SOFT, border: `1px solid ${VERIFIED}`,
+            color: VERIFIED,
+          }}>
+            <div style={{ position: 'relative', width: 56, height: 56 }}>
+              <svg width="56" height="56" style={{ transform: 'rotate(-90deg)' }}>
+                <circle cx="28" cy="28" r="24" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.2" />
+                <circle cx="28" cy="28" r="24" stroke="currentColor" strokeWidth="4" fill="none" strokeLinecap="round"
+                  strokeDasharray="150.8" strokeDashoffset={150.8 * (1 - score/100)} />
+              </svg>
+              <div style={{
+                position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+                fontFamily: FF_MONO, fontSize: 14, fontWeight: 500,
+              }}>{score}</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: '0.22em', textTransform: 'uppercase', opacity: 0.75 }}>TRUST SCORE</div>
+              <div style={{ fontFamily: FF_DISPLAY, fontSize: 22, letterSpacing: '-0.01em', marginTop: 2 }}>
+                {atts.filter(a => local > a.at).length} attestor{atts.filter(a => local > a.at).length === 1 ? '' : 's'} signed
+              </div>
+            </div>
+          </div>
+
+          {/* Mint button appears at end of form phase */}
+          {local > 12 && (
+            <div style={{
+              marginTop: 24,
+              padding: '16px 24px', background: CRIMSON, color: '#fff',
+              fontFamily: FF_MONO, fontSize: 13, letterSpacing: '0.16em', textTransform: 'uppercase',
+              display: 'inline-flex', alignItems: 'center', gap: 10,
+              boxShadow: local > 12.3 && local < 13 ? `0 0 0 6px rgba(176,60,40,0.25)` : 'none',
+              transform: local > 12.3 && local < 12.8 ? 'scale(0.97)' : 'scale(1)',
+              transition: 'transform 140ms ease, box-shadow 200ms ease',
+            }}>
+              ⛨ MINT PROOF
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mint spinner scene ──
+function MintingScene() {
+  const { localTime } = useSprite();
+  const steps = [
+    { label: 'Hashing evidence files',    at: 0.2 },
+    { label: 'Generating proof ID',       at: 0.9 },
+    { label: 'Collecting signatures',     at: 1.6 },
+    { label: 'Writing to permanent ledger', at: 2.3 },
+    { label: 'Publishing verification endpoint', at: 3.0 },
+  ];
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: PAPER, display: 'grid', placeItems: 'center' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{
+          width: 72, height: 72,
+          border: `2px solid ${RULE}`,
+          borderTopColor: CRIMSON,
+          borderRadius: '50%',
+          margin: '0 auto 36px',
+          animation: 'spin 1s linear infinite',
+        }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        <div style={{ fontFamily: FF_DISPLAY, fontSize: 56, lineHeight: 1.05, letterSpacing: '-0.02em' }}>
+          Minting your <span style={{ fontStyle: 'italic', color: CRIMSON }}>Proof</span>…
+        </div>
+        <div style={{ marginTop: 56, display: 'inline-flex', flexDirection: 'column', gap: 10, textAlign: 'left' }}>
+          {steps.map((s, i) => {
+            const on = localTime > s.at;
+            return (
+              <div key={i} style={{
+                display: 'flex', gap: 12, alignItems: 'center',
+                fontFamily: FF_MONO, fontSize: 14, letterSpacing: '0.05em',
+                color: on ? INK : INK_3,
+                opacity: on ? 1 : 0.5,
+                transition: 'opacity 200ms ease',
+              }}>
+                <span style={{ color: on ? VERIFIED : INK_3, width: 16 }}>{on ? '✓' : '·'}</span>
+                {s.label}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Seal stamp scene ──
+function SealScene() {
+  const { localTime } = useSprite();
+  const slamP = Math.max(0, Math.min(1, (localTime - 0.0) / 0.35));
+  // overshoot scale: big → snap to 1
+  const sealScale = slamP < 1
+    ? 2.4 - 1.4 * Easing.easeOutBack(slamP)
+    : 1;
+  const sealOpacity = Math.min(1, slamP * 2);
+
+  // splatter lines
+  const splat = Math.max(0, Math.min(1, (localTime - 0.3) / 0.4));
+
+  // stamp-text label rings around
+  const showText = localTime > 0.9;
+
+  // Proof ID types on after
+  const idTxt = 'LP-2024-0311-C902';
+  const idP = Math.max(0, Math.min(1, (localTime - 1.4) / 1.0));
+  const idChars = Math.floor(idTxt.length * idP);
+
+  // Tagline
+  const tagP = Math.max(0, Math.min(1, (localTime - 3.0) / 1.2));
+
+  // CTAs
+  const ctaP = Math.max(0, Math.min(1, (localTime - 4.2) / 0.7));
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: PAPER, overflow: 'hidden' }}>
+      {/* radial burst */}
+      <div style={{
+        position: 'absolute', left: '50%', top: '42%',
+        width: 800, height: 800, marginLeft: -400, marginTop: -400,
+        borderRadius: '50%',
+        background: `radial-gradient(circle, rgba(176,60,40,0.12), transparent 60%)`,
+        opacity: Math.min(1, (1 - slamP) * 0.6) + splat * 0.2,
+        transform: `scale(${0.5 + splat * 1.2})`,
+      }} />
+
+      {/* splatter radial lines */}
+      {Array.from({length: 12}).map((_, i) => {
+        const angle = (i / 12) * Math.PI * 2;
+        const len = 60 + splat * 180;
+        return (
+          <div key={i} style={{
+            position: 'absolute',
+            left: '50%', top: '42%',
+            width: 2, height: len,
+            background: CRIMSON,
+            opacity: (1 - splat) * 0.8,
+            transformOrigin: 'top',
+            transform: `rotate(${angle + Math.PI}rad) translateY(${120 + splat * 30}px)`,
+          }} />
+        );
+      })}
+
+      {/* the seal */}
+      <div style={{
+        position: 'absolute', left: '50%', top: '42%',
+        width: 340, height: 340, marginLeft: -170, marginTop: -170,
+        transform: `translate(0, 0) scale(${sealScale}) rotate(${(1 - slamP) * -12}deg)`,
+        opacity: sealOpacity,
+      }}>
+        <svg viewBox="0 0 340 340" width="340" height="340" style={{ overflow: 'visible' }}>
+          <defs>
+            <path id="sealCircle" d="M 170,170 m -132,0 a 132,132 0 1,1 264,0 a 132,132 0 1,1 -264,0" />
+          </defs>
+          <circle cx="170" cy="170" r="158" fill="none" stroke={CRIMSON} strokeWidth="4" />
+          <circle cx="170" cy="170" r="132" fill="none" stroke={CRIMSON} strokeWidth="2" />
+          <path d="M130 172 L162 204 L212 146" fill="none" stroke={CRIMSON} strokeWidth="10" strokeLinecap="round" strokeLinejoin="round"
+            strokeDasharray="200" strokeDashoffset={200 * (1 - Math.max(0, Math.min(1, (localTime - 0.5) / 0.4)))} />
+          {showText && (
+            <text fill={CRIMSON} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, letterSpacing: '0.3em' }}>
+              <textPath href="#sealCircle" startOffset="0%">
+                VERIFIED · LIVING PROOF · VERIFIED · LIVING PROOF ·
+              </textPath>
+            </text>
+          )}
+        </svg>
+      </div>
+
+      {/* below: proof id + tagline + cta */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, bottom: 90,
+        textAlign: 'center',
+      }}>
+        <div style={{
+          fontFamily: FF_MONO, fontSize: 12, letterSpacing: '0.24em', color: INK_3,
+          opacity: Math.min(1, (localTime - 1.1) / 0.4),
+          marginBottom: 18,
+        }}>
+          PROOF · MINTED
+        </div>
+        <div style={{
+          fontFamily: FF_DISPLAY, fontSize: 96, lineHeight: 1, letterSpacing: '-0.03em',
+          opacity: Math.min(1, tagP),
+          marginBottom: 24,
+        }}>
+          It's <span style={{ fontStyle: 'italic', color: CRIMSON }}>on the record</span>.
+        </div>
+
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 14,
+          padding: '12px 22px', border: `1px solid ${RULE}`, background: SURFACE,
+          fontFamily: FF_MONO, fontSize: 16, letterSpacing: '0.14em',
+          opacity: idP,
+          marginBottom: 20,
+        }}>
+          <span style={{ color: INK_3 }}>PROOF ID</span>
+          <span style={{ color: INK }}>{idTxt.slice(0, idChars)}{idP < 1 && idP > 0 ? '▍' : ''}</span>
+        </div>
+
+        <div style={{
+          fontFamily: FF_BODY, fontSize: 20, color: INK_2,
+          opacity: ctaP,
+          letterSpacing: '0.02em',
+        }}>
+          Permanent. Portable. Yours.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Mint scene ──
+function TheMint() {
+  const t = useTime();
+
+  return (
+    <div style={{ position: 'absolute', inset: 0 }}>
+
+      {/* Act 1 — establishing wide shot, dim */}
+      <Sprite start={0} end={2.2}>
+        {({ localTime }) => {
+          const p = Math.min(1, localTime / 1.0);
+          // dim at start, brighten
+          const dim = 0.3 + 0.7 * p;
+          return (
+            <div style={{ position: 'absolute', inset: 0, opacity: p }}>
+              <AppChrome dim={dim} />
+              {/* caption bottom-left */}
+              <div style={{
+                position: 'absolute', left: 40, bottom: 32,
+                fontFamily: FF_MONO, fontSize: 13, letterSpacing: '0.22em',
+                color: INK_3, opacity: Math.max(0, Math.min(1, (localTime - 0.6) / 0.6)),
+              }}>
+                01 · THE CANVAS
+              </div>
+            </div>
+          );
+        }}
+      </Sprite>
+
+      {/* Act 2 — form filling in, zoomed into main area */}
+      <Sprite start={2.0} end={16.0}>
+        {({ localTime, duration }) => {
+          // Zoom-in: 0 → 0.4s ramps from 1.0 scale (full view) to 1.12 scale focused on main
+          const zp = Math.min(1, localTime / 0.6);
+          const scale = 1 + 0.14 * Easing.easeInOutCubic(zp);
+          // slight pan down-right focusing on main panel
+          const tx = -80 * zp;
+          const ty = -30 * zp;
+          return (
+            <div style={{
+              position: 'absolute', inset: 0,
+              transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+              transformOrigin: 'center',
+            }}>
+              <AppChrome dim={0.78} />
+              <FormScene t0={2.0} t={t} />
+            </div>
+          );
+        }}
+      </Sprite>
+
+      {/* quick flash to minting */}
+      <Sprite start={15.8} end={16.4}>
+        {(ctx) => (
+          <div style={{
+            position: 'absolute', inset: 0, background: PAPER,
+            opacity: Math.sin(ctx.progress * Math.PI),
+          }} />
+        )}
+      </Sprite>
+
+      {/* Act 3 — minting spinner */}
+      <Sprite start={16.3} end={20.4}>
+        {(ctx) => (
+          <div style={{ position: 'absolute', inset: 0 }}>
+            <MintingScene />
+          </div>
+        )}
+      </Sprite>
+
+      {/* snap cut */}
+      <Sprite start={20.2} end={20.6}>
+        {(ctx) => (
+          <div style={{
+            position: 'absolute', inset: 0, background: '#fff',
+            opacity: Math.sin(ctx.progress * Math.PI) * 0.9,
+          }} />
+        )}
+      </Sprite>
+
+      {/* Act 4 — seal slams + mint success + cta */}
+      <Sprite start={20.4} end={28}>
+        {(ctx) => (
+          <div style={{ position: 'absolute', inset: 0 }}>
+            <SealScene />
+          </div>
+        )}
+      </Sprite>
+
+      {/* captions */}
+      <Sprite start={2.4} end={4.2}>
+        {(ctx) => {
+          const o = Math.sin(Math.min(1, ctx.progress * 1.3) * Math.PI);
+          return (
+            <div style={{
+              position: 'absolute', left: 40, bottom: 32,
+              fontFamily: FF_MONO, fontSize: 13, letterSpacing: '0.22em',
+              color: INK_3, opacity: o,
+            }}>
+              02 · STATE THE CLAIM
+            </div>
+          );
+        }}
+      </Sprite>
+      <Sprite start={7.0} end={8.8}>
+        {(ctx) => {
+          const o = Math.sin(Math.min(1, ctx.progress * 1.3) * Math.PI);
+          return (
+            <div style={{
+              position: 'absolute', left: 40, bottom: 32,
+              fontFamily: FF_MONO, fontSize: 13, letterSpacing: '0.22em',
+              color: INK_3, opacity: o,
+            }}>
+              03 · SHOW THE RECEIPTS
+            </div>
+          );
+        }}
+      </Sprite>
+      <Sprite start={9.0} end={12}>
+        {(ctx) => {
+          const o = Math.sin(Math.min(1, ctx.progress * 1.3) * Math.PI);
+          return (
+            <div style={{
+              position: 'absolute', left: 40, bottom: 32,
+              fontFamily: FF_MONO, fontSize: 13, letterSpacing: '0.22em',
+              color: INK_3, opacity: o,
+            }}>
+              04 · LET THE WORLD CO-SIGN
+            </div>
+          );
+        }}
+      </Sprite>
+      <Sprite start={16.4} end={20.2}>
+        {(ctx) => {
+          const o = Math.sin(Math.min(1, ctx.progress * 1.3) * Math.PI);
+          return (
+            <div style={{
+              position: 'absolute', left: 40, bottom: 32,
+              fontFamily: FF_MONO, fontSize: 13, letterSpacing: '0.22em',
+              color: INK_3, opacity: o,
+            }}>
+              05 · HASH · SIGN · SEAL
+            </div>
+          );
+        }}
+      </Sprite>
+
+      <TimeLabel scene="The Mint" />
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <Stage width={1920} height={1080} duration={28} background={PAPER} persistKey="themint">
+      <TheMint />
+    </Stage>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
